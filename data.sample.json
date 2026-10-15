@@ -167,11 +167,11 @@
 },
 {
 "date": "2026-10-15",
-"prompt": 9281568,
-"gen": 89747,
-"count": 9293926,
-"cached": 7115803,
-"cache_total": 8127650,
+"prompt": 9444134,
+"gen": 92669,
+"count": 9457954,
+"cached": 7195182,
+"cache_total": 8208933,
 "dec_peak": 35.2,
 "dec_peak_at": "12:36",
 "src": {
@@ -181,9 +181,9 @@
 1128411
 ],
 "lan": [
-2,
-416,
-25336
+5,
+1876,
+106619
 ],
 "frp": [
 4,
@@ -2310,9 +2310,9 @@
 },
 {
 "hour": "2026-10-15T18",
-"s0_dec_tps": 28.9,
+"s0_dec_tps": 29.6,
 "s1_dec_tps": 0.0,
-"s0_pre_tps": 237.6,
+"s0_pre_tps": 1476.0,
 "s1_pre_tps": 0.0
 }
 ],
@@ -2340,24 +2340,24 @@
 }
 },
 "lan": {
-"n": 2,
-"wait_p50_ms": 1835,
+"n": 5,
+"wait_p50_ms": 0,
 "wait_p90_ms": 3208,
-"hold_p50_ms": 59010,
-"out_tokens": 416,
-"in_tokens": 25336,
+"hold_p50_ms": 13119,
+"out_tokens": 1876,
+"in_tokens": 106619,
 "fail": 0,
-"ctx_p50": 12688,
-"ctx_p90": 12688,
-"ctx_n": 1,
-"pre_p50": 258,
-"pre_p90": 258,
-"pre_n": 1,
-"dec_p50": 26,
-"dec_p90": 26,
-"dec_n": 1,
+"ctx_p50": 13414,
+"ctx_p90": 14538,
+"ctx_n": 4,
+"pre_p50": 7406,
+"pre_p90": 15002,
+"pre_n": 4,
+"dec_p50": 28,
+"dec_p90": 30,
+"dec_n": 4,
 "peers": {
-"198.51.100.7": 1
+"198.51.100.7": 4
 }
 },
 "frp": {
@@ -2397,15 +2397,80 @@
 "finish": "stop"
 },
 {
+"t": "2026-10-15 18:03",
+"src": "lan",
+"ua": "",
+"rate": 28.2,
+"pre": 14253.5,
+"ctx": 12938,
+"gen": 48,
+"wait": 0,
+"hold": 2.6,
+"reused": 12792,
+"finish": "stop"
+},
+{
+"t": "2026-10-15 18:03",
+"src": "lan",
+"ua": "",
+"rate": 31.0,
+"pre": 7864.1,
+"ctx": 13991,
+"gen": 54,
+"wait": 0,
+"hold": 3.5,
+"reused": 13607,
+"finish": "stop"
+},
+{
+"t": "2026-10-15 18:03",
+"src": "lan",
+"ua": "",
+"rate": 30.7,
+"pre": 12669.8,
+"ctx": 12794,
+"gen": 136,
+"wait": 0,
+"hold": 5.4,
+"reused": 12645,
+"finish": "stop"
+},
+{
+"t": "2026-10-15 18:03",
+"src": "lan",
+"ua": "",
+"rate": 31.0,
+"pre": 12143.8,
+"ctx": 13610,
+"gen": 96,
+"wait": 0,
+"hold": 4.2,
+"reused": 13411,
+"finish": "stop"
+},
+{
+"t": "2026-10-15 18:03",
+"src": "lan",
+"ua": "",
+"rate": 27.5,
+"pre": 5938.3,
+"ctx": 13414,
+"gen": 506,
+"wait": 0,
+"hold": 20.9,
+"reused": 12936,
+"finish": "stop"
+},
+{
 "t": "2026-10-15 18:02",
 "src": "lan",
 "ua": "",
-"rate": 25.4,
-"pre": 244.8,
+"rate": 24.2,
+"pre": 262.8,
 "ctx": 12648,
 "gen": 154,
 "wait": 0,
-"hold": 56.2,
+"hold": 50.1,
 "reused": 0,
 "finish": "stop"
 },
@@ -2413,79 +2478,14 @@
 "t": "2026-10-15 16:45",
 "src": "local",
 "ua": "",
-"rate": 28.2,
-"pre": 58.1,
+"rate": 25.9,
+"pre": 54.0,
 "ctx": 28,
 "gen": 6,
 "wait": 0,
-"hold": 0.6,
+"hold": 0.7,
 "reused": 25,
 "finish": ""
-},
-{
-"t": "2026-10-15 16:45",
-"src": "frp",
-"ua": "",
-"rate": 25.4,
-"pre": 482.3,
-"ctx": 28,
-"gen": 6,
-"wait": 362,
-"hold": 0.3,
-"reused": 25,
-"finish": ""
-},
-{
-"t": "2026-10-15 17:18",
-"src": "local",
-"ua": "",
-"rate": 16.4,
-"pre": 290.4,
-"ctx": 17892,
-"gen": 73,
-"wait": 0,
-"hold": 63.6,
-"reused": 8192,
-"finish": "stop"
-},
-{
-"t": "2026-10-15 17:24",
-"src": "local",
-"ua": "",
-"rate": 14.3,
-"pre": 13210.3,
-"ctx": 25617,
-"gen": 88,
-"wait": 0,
-"hold": 8.2,
-"reused": 25456,
-"finish": "stop"
-},
-{
-"t": "2026-10-15 17:21",
-"src": "local",
-"ua": "",
-"rate": 12.9,
-"pre": 251.7,
-"ctx": 19980,
-"gen": 101,
-"wait": 0,
-"hold": 80.4,
-"reused": 8192,
-"finish": "stop"
-},
-{
-"t": "2026-10-15 17:16",
-"src": "local",
-"ua": "",
-"rate": 13.8,
-"pre": 277.0,
-"ctx": 17218,
-"gen": 210,
-"wait": 0,
-"hold": 75.4,
-"reused": 8192,
-"finish": "stop"
 }
 ],
 "req_slow": [
@@ -2601,7 +2601,7 @@
 "cancel": 2,
 "length": 0,
 "abandoned": 1,
-"stop": 17
+"stop": 20
 }
 },
 "depth_hist": [
@@ -2610,6 +2610,18 @@
 "8–32K",
 "32–100K",
 ">100K"
+],
+"engines": [
+{
+"name": "legacy-engine",
+"from": null,
+"to": "2026-10-15T11:23"
+},
+{
+"name": "local-engine",
+"from": "2026-10-15T11:27",
+"to": null
+}
 ],
 "engine": {
 "name": "local-engine",
@@ -2620,20 +2632,8 @@
 "up": true,
 "checked": null
 },
-"engines": [
-{
-"name": "local-engine",
-"from": null,
-"to": "2026-10-15T11:23"
-},
-{
-"name": "local-engine",
-"from": "2026-10-15T11:27",
-"to": null
-}
-],
 "pressure": {
-"busy_pct": 64,
+"busy_pct": 63,
 "deferred_n": 4,
 "deferred_total": 5,
 "req_per_hour": 48,
@@ -3039,6 +3039,12 @@
 "busy": 0,
 "deferred": 0,
 "dreq": 0
+},
+{
+"t": "18:06",
+"busy": 0,
+"deferred": 0,
+"dreq": 4
 }
 ]
 },

@@ -126,12 +126,16 @@ out['finish_days'] = {day: {k: n(v) for k, v in m.items()}
 out['depth_hist'] = [{'k': b.get('k'), 'n': n(b.get('n'))} if isinstance(b, dict) else b
                      for b in (d.get('depth_hist') or [])]
 
-# ---- 引擎：通用名（原值会暴露具体模型与硬件信息）----
+# ---- 引擎：通用名。两个时代必须给**不同**的通用名，否则看板上的切换说明会读成
+#      "10-15 11:23 之前是 local-engine，之后是 local-engine" —— 外人会当成 bug。
+out['engines'] = []
+for _e in (d.get('engines') or []):
+    # 注意方向：有 to 表示"这段已结束"=旧时代；to 为 null 才是进行中的当前引擎。
+    out['engines'].append({'name': 'legacy-engine' if _e.get('to') else 'local-engine',
+                           'from': _e.get('from'), 'to': _e.get('to')})
 out['engine'] = {'name': 'local-engine', 'backend': 'Metal', 'model': 'example-model',
                  'ctx': (d.get('engine') or {}).get('ctx'), 'vision': (d.get('engine') or {}).get('vision'),
                  'up': True, 'checked': None}
-out['engines'] = [{'name': 'local-engine', 'from': e.get('from'), 'to': e.get('to')}
-                  for e in (d.get('engines') or [])]
 
 # ---- 压力采样：只留时刻与状态，去掉任何客户端细节 ----
 p = d.get('pressure') or {}
