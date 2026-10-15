@@ -200,7 +200,11 @@
        !important 是为了压过 JS 写在内联 style 上的 left/top。 */
     .tooltip { left: 10px !important; right: 10px !important; top: auto !important;
                bottom: 10px !important; width: auto !important; min-width: 0;
-               white-space: normal; max-width: none; }
+               white-space: normal; max-width: none;
+               /* 基础 z-index:10 低于 .fab 的 45 —— 移动端 tooltip 是全宽贴底卡片，
+                  浮动按钮必然压住其右侧内容（实测 frp 行的数值被挡）。抬到 60：
+                  读 tip 时按钮被瞬态遮住可接受，tip 关闭即还原。 */
+               z-index: 60; }
     /* 顶栏在窄屏：标题块与范围切换会挤成一行，把"30 天"折成两行 —— 允许换行并收紧按钮内边距 */
     .topbar { flex-wrap: wrap; gap: 10px; }
     .seg button { padding: 6px 10px; white-space: nowrap; }
@@ -361,18 +365,24 @@ const DAYS = 365;
 let data = [];
 const today = new Date();
 // 真数据来自 data.json(aggregate.py 从 llama-server 日志聚合);失败的兜底为空数组
+// 日期键必须用本地时区:toISOString() 是 UTC —— 本地 0~8 点时 key 比实际晚一天,
+// 热力图 out 数组整体错位一列,上周六的格子被画进"本周六"(未来格带数据,被当成 bug 圈出来过)。
+const dayKey = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 let engine = null;
+// 同一份 data.json 首屏只取一次：此前 4 处串行 fetch 同一文件且都带 cache-buster，
+// 首屏要排 4 个 CF 隧道往返（实测单趟 2~5s、抖动大时直接超时），数据面板半天不出。
+const DATA = fetch('data.json?ts=' + Date.now()).then(r => r.json()).catch(() => null);
 async function loadData() {
   try {
-    const r = await fetch('data.json?ts=' + Date.now());
-    const j = await r.json();
+    const j = await DATA;
+    if (!j) return [];
     engine = j.engine || null;
     const map = new Map(j.days.map(d => [d.date, d]));
     // 补齐近 DAYS 天里没记录的日期(空格)
     const out = [];
     for (let i = DAYS - 1; i >= 0; i--) {
       const d = new Date(today); d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
+      const key = dayKey(d);
       out.push(map.get(key) || { date: key, count: 0, s0: 0, s1: 0 });
     }
     return out;
@@ -382,9 +392,8 @@ data = await loadData();
 let hoursData = [];
 async function loadHours() {
   try {
-    const r = await fetch('data.json?ts=' + Date.now());
-    const j = await r.json();
-    return j.hours || [];
+    const j = await DATA;
+    return (j && j.hours) || [];
   } catch (_) { return []; }
 }
 hoursData = await loadHours();
@@ -567,7 +576,8 @@ const firstSrcDay = (data.find(d => d.src) || {}).date || '—';
 let TOP_ENGINES = [];   // 引擎时代列表（llama / Strata 的起止），画"切换点"标记用
 const TOP = await (async () => {
   try {
-    const j = await (await fetch('data.json?ts=' + Date.now())).json();
+    const j = await DATA;
+    if (!j) return {};
     TOP_ENGINES = j.engines || [];
     return j.traffic_by_source || {};
   } catch (_) { return {}; }
@@ -720,7 +730,7 @@ renderRatio();
 
 // ---- 吞吐趋势(近 14 天,按小时,分槽 × prefill/decode)----
 function renderTpsChart(elId, keyS0, keyS1, label) {
-  const cutStr = (() => { const d = new Date(today); d.setDate(d.getDate() - 14); return d.toISOString().slice(0, 10); })();
+  const cutStr = (() => { const d = new Date(today); d.setDate(d.getDate() - 14); return dayKey(d); })();
   const pts = hoursData.filter(h => h.hour.slice(0, 10) >= cutStr && (h[keyS0] > 0 || (keyS1 && h[keyS1] > 0)));
   const el = document.getElementById(elId);
   if (!pts.length) { el.innerHTML = '<div class="hint">暂无数据</div>'; return; }
@@ -792,7 +802,7 @@ renderTpsChart('tps-pre', 's0_pre_tps', 's1_pre_tps', 'prefill');
 
 // ================= 新增面板（A'~F）=================
 // 这些面板的数据源只有 Strata 时代（自 10-15），与范围切换无关，故独立渲染一次。
-const payload = await (await fetch('data.json?ts=' + Date.now())).json();
+const payload = (await DATA) || {};
 
 // ---- 健康度 · 按天收尾状态 ----
 // 只算真实请求的结局：stop(正常) / length(触顶截断) / cancel(被取消) / error(失败)。
