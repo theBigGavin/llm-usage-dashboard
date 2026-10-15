@@ -1,0 +1,1198 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM 用量 · Dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #f7f7f5; --card: #ffffff; --line: #e7e5e0;
+    --fg: #1c1c1a; --muted: #8a867e; --accent: #d97706;
+    /* 派生指标专用色（比值 / 健康度这类"算出来"的曲线）。
+       来源色是保留的：本机 #fbbf24 · 局域网 #b45309 · frp #0ea5e9。
+       之前效率曲线直接用了 #0ea5e9 —— 等于把"隧道的颜色"画在一条与来源无关的全局曲线上。 */
+    --derived: #4f46e5;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+    background: var(--bg); color: var(--fg); line-height: 1.5;
+    padding: 40px 32px; max-width: 1120px; margin: 0 auto;
+  }
+  .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; }
+  .title { font-size: 26px; font-weight: 700; letter-spacing: -.02em; }
+  .controls { display: flex; gap: 10px; align-items: center; }
+  .theme-btn { border: 1px solid var(--line); background: var(--card); color: var(--muted); border-radius: 8px; padding: 7px 10px; cursor: pointer; font-size: 14px; font-family: inherit; display: flex; align-items: center; }
+  .theme-btn:hover { color: var(--fg); }
+  .theme-btn svg { width: 15px; height: 15px; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .theme-btn .icon-moon { fill: currentColor; stroke: none; }
+  .theme-btn .icon-sun { fill: none; display: none; }
+  [data-theme="dark"] .theme-btn .icon-sun { display: block; }
+  [data-theme="dark"] .theme-btn .icon-moon { display: none; }
+  /* 暗色主题 */
+  [data-theme="dark"] {
+    --bg: #16150f; --card: #201e18; --line: #35321f;
+    --fg: #efece2; --muted: #948e7c; --accent: #fbbf24;
+    --derived: #818cf8;   /* 暗色下提亮；与琥珀系的来源色保持距离 */
+  }
+  [data-theme="dark"] .seg { background: #2a2719; }
+  [data-theme="dark"] .seg button.on { background: #3d3823; color: var(--fg); box-shadow: none; }
+  [data-theme="dark"] .bar-row { border-bottom-color: #2a2719; }
+  [data-theme="dark"] .bar-row .name { color: #b5ae9c; }
+  [data-theme="dark"] .bar-row .track { background: #2a2719; }
+  [data-theme="dark"] .stat-line { border-bottom-color: #2a2719; }
+  [data-theme="dark"] .slot-date { color: var(--muted); }
+  [data-theme="dark"] .legend .sw { border-color: var(--line); }
+  .seg { display: flex; background: #eceae5; border-radius: 8px; padding: 3px; font-size: 13px; }
+  .seg button { border: 0; background: none; padding: 6px 14px; border-radius: 6px; cursor: pointer; color: var(--muted); font-family: inherit; }
+  .seg button.on { background: var(--card); color: var(--fg); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  /* 6 张卡：桌面 3 列 × 2 行。4 列会剩 2 张孤行很难看；6 列太窄，"等效成本节省"这类长标签会折行。 */
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 26px; }
+  /* 标题下的"当前引擎"副行：在线状态用小圆点（不用 emoji，小尺寸会变空心方框） */
+  .sub { font-size: 12.5px; color: var(--muted); margin-top: 5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .sub b { color: var(--fg); font-weight: 600; }
+  .sub .sep { color: var(--line); }
+  .live { width: 7px; height: 7px; border-radius: 50%; background: #15803d; flex: none; }
+  .live.off { background: #b91c1c; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
+  .card .label { font-size: 12px; color: var(--muted); }
+  .card .value { font-size: 28px; font-weight: 700; letter-spacing: -.02em; margin: 4px 0 2px; }
+  .card .delta { font-size: 12px; }
+  .up { color: #15803d; } .down { color: #b91c1c; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+  .panel-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 18px; }
+  .panel h2 { font-size: 15px; font-weight: 650; }
+  .hint { font-size: 12px; color: var(--muted); }
+  /* 分节：分割线风格（标签在左、细线补满右侧）。
+     上一版是"短横 + 标签"且带负下边距 —— 负边距把下面的面板拽上来压在一起，视觉上很挤。 */
+  .sec { display: flex; align-items: center; gap: 12px; margin: 36px 2px 18px;
+         font-size: 12px; font-weight: 700; letter-spacing: .10em; color: var(--muted);
+         scroll-margin-top: 16px; }        /* 纵向索引跳转后留一点上边距，不贴顶 */
+  .sec::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+  /* 表格内的分组小标题（峰值与长尾：上"最快"、下"最慢"两段共用一张表） */
+  .tbl .tbl-sec { padding: 16px 0 6px; font-size: 11.5px; font-weight: 700; letter-spacing: .06em;
+                  color: var(--muted); border-bottom: 1px solid var(--line); }
+  /* 来源统计：<details> 的标题行 + 细项行。
+     原来是 inline flex + space-between：手机 390px 上「本机」和「66 次 · 87% · 24K tok」直接重叠。
+     想改 inline 样式必须用 !important（inline 优先于样式表），所以干脆把这些样式收进类里。 */
+  .src-det { border-top: 1px solid var(--line); padding: 8px 0; }
+  .src-sum { cursor: pointer; list-style: none; display: flex; justify-content: space-between;
+             gap: 10px; font-size: 12.5px; }
+  .src-name { flex: none; }
+  .src-name .caret { opacity: .45; margin-right: 5px; }
+  .src-body { margin: 7px 0 2px 18px; font-size: 11.5px; color: var(--muted); line-height: 1.75; }
+  .src-row { display: flex; justify-content: space-between; gap: 12px; }
+  .src-row > b { font-weight: 500; color: inherit; font-variant-numeric: tabular-nums; text-align: right; }
+  /* 右侧纵向快速索引（滚动监听高亮当前分段 + 点击平滑跳转）。
+     放右边而不是左边：手机上左边缘是返回手势区，靠右不会误触。
+     标签默认透明（只留点），当前分段与悬停时才浮现，所以静止时不挡内容。 */
+  /* 贴着浏览器右缘但留出呼吸：10px 反馈"太贴边了"，改成 32px（与页面自身左右留白同档）。
+     标签在点的左侧 —— 只在栏沟够宽时显示（≥1320px，栏沟 ≥100px），落在留白里而不是压在卡片上。
+     这样"靠边缘"和"不压内容"同时成立；窄屏不显示标签，也不做任何悬停弹层。 */
+  .rail { position: fixed; right: 32px; top: 50%; transform: translateY(-50%);
+          z-index: 40; display: flex; flex-direction: column; gap: 13px; align-items: flex-end; }
+  .rail button { position: relative; display: flex; align-items: center; background: none; border: 0;
+                 padding: 4px 3px; cursor: pointer; color: var(--muted); font: inherit; }
+  .rail .lbl { position: absolute; right: 100%; margin-right: 9px; pointer-events: none;
+               font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--muted);
+               white-space: nowrap; opacity: 0; visibility: hidden; transition: opacity .18s, color .18s; }
+  /* visibility 一起切：窄屏时标签连盒子都不占，否则它的隐形盒子会伸到卡片上面
+     （opacity:0 看不见，但"不压内容"这个断言就不再是绝对的了）。 */
+  @media (min-width: 1320px) { .rail .lbl { opacity: 1; visibility: visible; } }
+  .rail button.on .lbl { color: var(--fg); }
+  .rail .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line);
+               border: 1px solid var(--muted); transition: background .18s, border-color .18s, transform .18s; }
+  .rail button.on .dot { background: var(--derived); border-color: var(--derived); transform: scale(1.4); }
+  /* 手机专用：右下角悬浮圆点按钮 + 点击弹出的索引（宽屏隐藏，宽屏用右侧常驻索引）。
+     按钮与条目图标都是内联 SVG（不用 emoji）。 */
+  .fab { display: none; position: fixed; right: 16px; bottom: 20px; z-index: 45;
+         width: 46px; height: 46px; border-radius: 50%; align-items: center; justify-content: center;
+         background: var(--card); color: var(--fg); border: 1px solid var(--line);
+         box-shadow: 0 3px 12px rgba(0,0,0,.20); cursor: pointer; }
+  .fab:active { transform: scale(.94); }
+  .fab svg { width: 22px; height: 22px; }
+  .fab-panel { position: fixed; right: 16px; bottom: 76px; z-index: 45; min-width: 156px;
+               background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+               box-shadow: 0 8px 28px rgba(0,0,0,.24); padding: 6px; opacity: 0;
+               transform: translateY(8px) scale(.97); pointer-events: none;
+               transition: opacity .18s, transform .18s; }
+  .fab-panel.open { opacity: 1; transform: none; pointer-events: auto; }
+  .fab-panel button { display: flex; align-items: center; gap: 9px; width: 100%; background: none;
+                      border: 0; padding: 9px 10px; border-radius: 9px; cursor: pointer;
+                      color: var(--fg); font: inherit; font-size: 13.5px; text-align: left; }
+  .fab-panel button:hover { background: var(--bg); }
+  .fab-panel button.on { color: var(--derived); font-weight: 650; }
+  .fab-panel button svg { width: 16px; height: 16px; flex: none; opacity: .85; }
+  .fab-panel .title { padding: 7px 10px 3px; font-size: 11px; font-weight: 650; letter-spacing: .08em;
+                      color: var(--muted); }
+  .fab-panel .sep { height: 1px; background: var(--line); margin: 5px 8px; }
+  /* 热力图配色(CSS 变量,明暗主题各一套) */
+  :root { --c0: #f0efe9; --c1: #fde8c8; --c2: #fbbf24; --c3: #ea8c0a; --c4: #b45309; }
+  [data-theme="dark"] { --c0: #2a2719; --c1: #57430e; --c2: #a97b12; --c3: #e5a50a; --c4: #fcd34d; }
+  /* 状态色（"结局"编码，健康度面板用）—— 刻意不复用上面那两套：
+     --c2 就是本机来源色、--c4 就是局域网来源色，健康度之前拿它们当"正常/截断"，
+     结果两个状态渲染成几乎一样的琥珀（#fbbf24 vs #b45309），语义还都指向"来源"。 */
+  :root { --st-ok: #15803d; --st-trunc: #ca8a04; --st-cancel: #ea580c; --st-fail: #b91c1c; }
+  [data-theme="dark"] { --st-ok: #4ade80; --st-trunc: #facc15; --st-cancel: #fb923c; --st-fail: #f87171; }
+  .legend { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); justify-content: flex-end; margin-top: 14px; }
+  .legend .sw { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--line); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .bar-row { display: flex; align-items: center; gap: 12px; font-size: 13px; padding: 7px 0; border-bottom: 1px solid #f3f1ec; }
+  .bar-row:last-child { border-bottom: 0; }
+  .bar-row .name { width: 210px; color: #55524c; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-row .track { flex: 1; height: 10px; background: #f3f1ec; border-radius: 5px; overflow: hidden; }
+  .bar-row .fill { height: 100%; background: linear-gradient(90deg, #fbbf24, #d97706); border-radius: 5px; min-width: 2px; }
+  .bar-row .num { width: 80px; text-align: right; font-variant-numeric: tabular-nums; }
+  .tooltip { position: fixed; pointer-events: none; background: #1c1c1a; color: #fff; border-radius: 8px;
+    padding: 10px 13px; font-size: 12px; opacity: 0; transition: opacity .1s; z-index: 10; white-space: nowrap;
+    box-shadow: 0 4px 14px rgba(0,0,0,.18); min-width: 170px; }
+  /* 原「来源占比」堆叠柱的样式已随面板删除：.slots / .slot-col / .slot-wrap / .slot-date / .s0 / .s1
+     都不再有引用。保留 .dot —— 来源图例（来源统计 / 各面板说明）还在用它。 */
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin: 0 4px 0 8px; vertical-align: -1px; }
+  .stat-line { display: flex; justify-content: space-between; font-size: 13px; padding: 8px 0; border-bottom: 1px solid #f3f1ec; }
+  .stat-line:last-child { border: 0; }
+  .stat-line b { font-variant-numeric: tabular-nums; }
+  /* ---- 新增面板：横向条形 / 键值行 / 峰值榜表格 / 采样条带 ---- */
+  .hbars { display: flex; flex-direction: column; gap: 8px; }
+  .hbar { display: flex; align-items: center; gap: 10px; font-size: 12.5px; }
+  .hbar .hb-name { width: 62px; color: var(--muted); }
+  /* display:block 不能省：这些是 <span>，inline 元素会忽略 width/height，
+     结果只剩灰底轨道、填充条完全不可见（实测踩到：条状图"没有填充"）。 */
+  .hbar .hb-track { display: block; flex: 1; height: 14px; background: #f3f1ec; border-radius: 4px; overflow: hidden; }
+  [data-theme="dark"] .hbar .hb-track { background: #2a2719; }
+  .hbar .hb-fill { display: block; height: 100%; background: linear-gradient(90deg, #fbbf24, #d97706); border-radius: 4px; }
+  /* 宽度必须放得下"93.5% · 205K"这类串：76px 会折行，该行变两倍高、条形行高不齐（实测 38/38/38/19） */
+  .hbar .hb-num { width: 112px; text-align: right; font-variant-numeric: tabular-nums; }
+  .kvs { display: flex; flex-wrap: wrap; gap: 5px 20px; font-size: 12.5px; color: var(--muted); margin-top: 16px; }
+  .kvs b { color: var(--fg); font-variant-numeric: tabular-nums; }
+  .tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  /* 横向内边距不能为 0：相邻两列都右对齐时数字会贴在一起 ——
+     窄屏实测把「请求 4」和「占比 57%」渲染成「457%」（看图才发现，数值检查看不出来）。 */
+  .tbl th { text-align: right; font-weight: 500; color: var(--muted); padding: 4px 0 4px 10px; font-size: 11.5px; }
+  .tbl th:first-child, .tbl td:first-child { text-align: left; padding-left: 0; }
+  .tbl td { text-align: right; padding: 6px 0 6px 10px; border-top: 1px solid #f3f1ec; font-variant-numeric: tabular-nums; }
+  [data-theme="dark"] .tbl td { border-top-color: #2a2719; }
+  .strip { display: flex; gap: 2px; margin-top: 14px; flex-wrap: wrap; }
+  .strip i { width: 8px; height: 16px; border-radius: 2px; background: var(--c0); display: block; }
+  .strip i.busy { background: var(--c2); }
+  .strip i.wait { background: #b91c1c; }
+
+  /* 移动端规则必须放最后：与基础规则同优先级，靠后者胜出。
+     之前写在 .grid2/.cards 基础规则之前，被后者覆盖 —— 手机上面板不塌成单列，
+     分槽消耗只分到 ~115px 宽，图表被压扁、日期标签被迫折行。 */
+  @media (max-width: 720px) {
+    body { padding: 24px 14px 60px; }
+    .cards { grid-template-columns: 1fr 1fr; }
+    .grid2 { grid-template-columns: 1fr; }
+    .title { font-size: 20px; }
+    /* 面板标题与右侧说明在窄屏必须纵向堆放：并排时说明会折行插进标题里，
+       渲染成"每日 token 数据来自…/消耗/账本…"这种错行（改长说明时踩到过） */
+    .panel-head { flex-direction: column; align-items: flex-start; gap: 3px; }
+    .panel-head .legend { width: 100%; }
+    /* 跟随鼠标的浮层在窄屏必然被视口切掉（截图实测：右侧和底部都被裁）。
+       窄屏本来就没有"鼠标位置"这回事，直接改成底部贴合的卡片样式；
+       !important 是为了压过 JS 写在内联 style 上的 left/top。 */
+    .tooltip { left: 10px !important; right: 10px !important; top: auto !important;
+               bottom: 10px !important; width: auto !important; min-width: 0;
+               white-space: normal; max-width: none; }
+    /* 顶栏在窄屏：标题块与范围切换会挤成一行，把"30 天"折成两行 —— 允许换行并收紧按钮内边距 */
+    .topbar { flex-wrap: wrap; gap: 10px; }
+    .seg button { padding: 6px 10px; white-space: nowrap; }
+  }
+  /* 「峰值与长尾」在 390px 下 6 列会把「本机」折成「本」「机」竖排、表头也折行 —— 重叠检查查不出来，
+     因为失效形式是"折行"而不是"重叠"。手机上改成每条记录 3+3 两行（flex-wrap），桌面不受影响。 */
+  @media (max-width: 720px) {
+    #top-table tr { display: flex; flex-wrap: wrap; }
+    /* 固定 1/3 宽，不要 flex-grow：让它变宽的话，文字长的格子换行位置不同，
+       表头和数据行会各自排出不同的列序（实测表头排成了"时间/上下文/来源"）。 */
+    #top-table th, #top-table td { flex: 0 0 33.33%; padding: 3px 5px; font-size: 11.5px; white-space: normal; }
+    #top-table .tbl-sec { flex: 1 1 100%; padding: 14px 0 6px; }
+    /* 表头在手机上隐藏：flex 折行下它无法保证与数据同序（实测表头排成了 时间/上下文/来源，
+       数据行却是 时间/来源/decode）。改成每格自带标签，顺序问题从根上消失，也不再依赖折行位置。 */
+    #top-table .req-head { display: none; }
+    #top-table td::before { content: attr(data-th); display: block; font-size: 9.5px;
+                            color: var(--muted); margin-bottom: 1px; }
+    #top-table tr + tr { margin-top: 7px; }
+    /* 来源统计：标题行换行（总数另起一行，不再和来源名抢宽度），细项值右对齐并允许断词
+       —— 「对端 127.0.0.1 ×53、192.0.2.11 ×2」这种长值在 390px 里必须能换行。 */
+    .src-sum { flex-wrap: wrap; row-gap: 3px; }
+    .src-tot { width: 100%; }
+    .src-row { align-items: baseline; }
+    .src-row > b { max-width: 64%; word-break: break-word; }
+    /* 手机改用右下角悬浮按钮 + 弹出式索引（含"返回顶部"）：常驻的一排点会一直占着内容右缘，
+       边缘滑动又容易和设备/浏览器的边缘手势抢，所以彻底换成按钮。 */
+    .rail { display: none; }
+    .fab { display: flex; }
+  }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div>
+    <div class="title">本地模型用量</div>
+    <div class="sub" id="engine-line"><span class="live off"></span><span>引擎状态未知</span></div>
+  </div>
+  <div class="controls">
+    <div class="seg" id="range-seg">
+      <button data-d="30">30 天</button>
+      <button data-d="90">90 天</button>
+      <button data-d="365" class="on">一年</button>
+    </div>
+    <button class="theme-btn" id="theme-btn" title="切换明暗">
+      <svg class="icon-moon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      <svg class="icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+    </button>
+  </div>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="label">近 7 天 · 输入</div><div class="value" id="t7in">–</div><div class="delta" id="t7in-sub"></div></div>
+  <div class="card"><div class="label">近 7 天 · 输出</div><div class="value" id="t7out">–</div><div class="delta" id="t7out-sub"></div></div>
+  <div class="card"><div class="label">近 30 天 · 输入</div><div class="value" id="t30in">–</div><div class="delta" id="t30in-sub"></div></div>
+  <div class="card"><div class="label">近 30 天 · 输出</div><div class="value" id="t30out">–</div><div class="delta" id="t30out-sub"></div></div>
+  <div class="card"><div class="label">失败 / 放弃</div><div class="value" id="failv">–</div><div class="delta" id="failv-sub">累计</div></div>
+  <div class="card"><div class="label">排队 P50 / P90</div><div class="value" id="waitv">–</div><div class="delta" id="waitv-sub">累计 · 非隧道来源</div></div>
+</div>
+
+<div class="cards">
+  <div class="card"><div class="label">今日</div><div class="value" id="today">–</div><div class="delta" id="today-sub"></div></div>
+  <div class="card"><div class="label">等效成本节省</div><div class="value" id="saved">–</div><div class="delta" id="saved-sub"></div></div>
+  <div class="card"><div class="label">缓存命中率</div><div class="value" id="cache">–</div><div class="delta" id="cache-sub">–</div></div>
+</div>
+
+<div class="sec">现在</div>
+
+<div class="panel">
+  <div class="panel-head"><h2>服务压力</h2><span class="hint">并发=1 · 看护约每 5 分钟采样一次</span></div>
+  <div class="kvs" id="pressure-kvs"></div>
+  <div class="strip" id="pressure-strip"></div>
+</div>
+
+<div class="sec">长期</div>
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>每日 token 消耗</h2>
+    <span class="hint">数据来自 llama-server 日志 + Strata 请求账本 · 每 2 分钟刷新</span>
+  </div>
+  <div id="heatmap" style="overflow-x:auto"></div>
+  <div class="legend">
+    少 <span class="sw" style="background:var(--c0)"></span><span class="sw" style="background:var(--c1)"></span><span class="sw" style="background:var(--c2)"></span><span class="sw" style="background:var(--c3)"></span><span class="sw" style="background:var(--c4)"></span> 多
+  </div>
+  <div class="hint" id="switch-note" style="margin-top:10px"></div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><h2>输入 → 输出 效率 · 近 30 天</h2><span class="hint">每 1000 输入 token 产出多少输出 token · 独立纵轴（与上面那张图不共用比例）</span></div>
+  <div id="ratio-chart"></div>
+</div>
+
+<div class="panel">
+  <div class="panel-head"><h2>健康度 · 按天收尾状态</h2><span class="hint">每天请求的结局：正常结束 / 触顶截断 / 被取消 / 失败 —— 唯一能看见"没跑完的请求"的地方（自 10-15 起）</span></div>
+  <div id="health-chart"></div>
+</div>
+
+<div class="grid2">
+  <div class="panel"><div class="panel-head"><h2>按模型</h2><span class="hint">近 30 天</span></div><div id="by-model"></div></div>
+  <div class="panel"><div class="panel-head"><h2>来源统计 · 近 30 天</h2><span class="hint">本机 / 局域网 / frp 隧道 · 队列优先级：本机与局域网先拿到回合，隧道流量让行</span></div><div id="slot-stats"></div></div>
+</div>
+
+<div class="sec">性能</div>
+
+<div class="panel">
+  <div class="panel-head"><h2>Decode 吞吐 · 近 14 天</h2><span class="hint"><i class="dot" style="background:#fbbf24"></i>本地引擎 · t/s 按小时（单序列引擎，只有一个槽）</span></div>
+  <div id="tps-dec"></div>
+</div>
+<div class="panel">
+  <div class="panel-head"><h2>Prefill 吞吐 · 近 14 天</h2><span class="hint"><i class="dot" style="background:#fbbf24"></i>本地引擎 · t/s 按小时（单序列引擎，只有一个槽）</span></div>
+  <div id="tps-pre"></div>
+</div>
+
+<div class="grid2">
+  <div class="panel">
+    <div class="panel-head"><h2>上下文长度分布</h2><span class="hint">按请求数 · 自 10-15</span></div>
+    <div class="hbars" id="depth-hist"></div>
+    <div class="kvs" id="ttft-kvs"></div>
+  </div>
+  <div class="panel">
+    <div class="panel-head"><h2>投机解码效率 · 按天</h2><span class="hint">接受率 = 被采纳草稿 ÷ 提议草稿</span></div>
+    <div class="hbars" id="mtp-bars"></div>
+  </div>
+</div>
+
+<div class="sec">明细</div>
+
+<div class="panel">
+  <div class="panel-head"><h2>峰值与长尾</h2><span class="hint">上：最快（decode t/s） · 下：最慢（占用时长）—— 只放最快的会掩盖问题 · 自 10-15，含来源 / 排队 / 占用</span></div>
+  <table class="tbl" id="top-table"></table>
+</div>
+
+<div class="rail" id="rail">
+  <button type="button"><span class="lbl">现在</span><span class="dot"></span></button>
+  <button type="button"><span class="lbl">长期</span><span class="dot"></span></button>
+  <button type="button"><span class="lbl">性能</span><span class="dot"></span></button>
+  <button type="button"><span class="lbl">明细</span><span class="dot"></span></button>
+</div>
+
+<button class="fab" id="fab" type="button" aria-label="页面索引">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
+  </svg>
+</button>
+<div class="fab-panel" id="fab-panel"></div>
+
+<div class="tooltip" id="tip"></div>
+
+<script type="module">
+const DAYS = 365;
+let data = [];
+const today = new Date();
+// 真数据来自 data.json(aggregate.py 从 llama-server 日志聚合);失败的兜底为空数组
+let engine = null;
+async function loadData() {
+  try {
+    const r = await fetch('data.json?ts=' + Date.now());
+    const j = await r.json();
+    engine = j.engine || null;
+    const map = new Map(j.days.map(d => [d.date, d]));
+    // 补齐近 DAYS 天里没记录的日期(空格)
+    const out = [];
+    for (let i = DAYS - 1; i >= 0; i--) {
+      const d = new Date(today); d.setDate(d.getDate() - i);
+      const key = d.toISOString().slice(0, 10);
+      out.push(map.get(key) || { date: key, count: 0, s0: 0, s1: 0 });
+    }
+    return out;
+  } catch (_) { return []; }
+}
+data = await loadData();
+let hoursData = [];
+async function loadHours() {
+  try {
+    const r = await fetch('data.json?ts=' + Date.now());
+    const j = await r.json();
+    return j.hours || [];
+  } catch (_) { return []; }
+}
+hoursData = await loadHours();
+const fmt = n => n >= 1e6 ? (n/1e6).toFixed(1)+'M' : n >= 1e3 ? (n/1e3).toFixed(0)+'K' : n;
+const sum = a => a.reduce((s,x)=>s+x.count,0);
+
+// ---- 当前引擎（data.json 的 engine 块由 aggregate_all.py 现场探测写入）----
+function renderEngine() {
+  const el = document.getElementById('engine-line');
+  const e = engine;
+  if (!e || !e.name) { el.innerHTML = '<span class="live off"></span><span>引擎状态未知</span>'; return; }
+  const sep = '<span class="sep">·</span>';
+  // 窄屏这行会折 2-3 行，只留辨识引擎必需的信息（模型/能力/上下文/版本）；
+  // 新鲜度交给下面那句"每 2 分钟刷新"，不再单列探测时间。
+  const bits = [
+    e.model || null,
+    e.vision ? '支持图像' : '纯文本',
+    e.ctx ? `上下文 ${Math.floor(e.ctx / 1000)}K` : null,
+    e.version ? `v${e.version}` : null,
+  ].filter(Boolean);
+  el.innerHTML = `<span class="live${e.up ? '' : ' off'}"></span>`
+    + `<span>当前引擎 <b>${e.name}</b>（${e.backend || '—'}）</span>${sep}`
+    + bits.map(t => `<span>${t}</span>`).join(sep)
+    + (e.up ? '' : `${sep}<span style="color:#b91c1c">探测失败，显示上次结果</span>`);
+}
+renderEngine();
+
+document.getElementById('today').textContent = fmt(data.at(-1).count);
+// 「本周 / 本月」两张卡已并入第一屏的「近 7 / 30 天」那一行（含输入/输出拆分与环比），
+// 见下面的 renderTrend()。今日/成本/峰值/缓存四张保留在原位。
+// 今日 vs 昨日（此前这里是写死的"↑ 12% vs 昨日"，与真实数据无关）
+(() => {
+  const t = data.at(-1).count, y = data.at(-2) ? data.at(-2).count : 0;
+  const el = document.getElementById('today-sub');
+  if (!y) { el.textContent = '昨日无数据'; return; }
+  const pct = (t - y) / y * 100;
+  el.className = 'delta ' + (pct >= 0 ? 'up' : 'down');
+  el.textContent = `${pct >= 0 ? '↑' : '↓'} ${Math.abs(pct).toFixed(0)}% vs 昨日`;
+})();
+
+const tip = document.getElementById('tip');
+let currentDays = 365;
+function render() {
+  const startDate = new Date(today); startDate.setDate(startDate.getDate() - (currentDays - 1));
+  const view = data.slice(-currentDays);
+  drawHeatmap(view, startDate);
+  // 等效成本跟随选中范围
+  document.getElementById('saved').textContent = '¥' + Math.round(sum(view) / 1e6 * 4.2);
+  document.getElementById('saved-sub').textContent = `近 ${currentDays === 365 ? '一年' : currentDays + ' 天'} · DeepSeek 计价`;
+  // 「峰值吞吐量」卡片已删除：它显示的 65.1 t/s 就是「单请求峰值榜」表的第一行
+  // （同一个数字），而榜单还多给了确切时间点。此处不再计算，避免写已不存在的元素。
+  // 缓存命中率：Σ命中 / Σ提示。两个引擎的计数器语义不同（llama 的 prompt 只算实读、
+  // Strata 的 prompt_tokens 是整段），已在 aggregate_all.py 归一化成同一对量再相加。
+  let ch = 0, cb = 0, cdays = 0, firstC = '';
+  for (const d of view) if (d.cache_total) { ch += d.cached || 0; cb += d.cache_total; cdays++; firstC = firstC || d.date.slice(5); }
+  document.getElementById('cache').textContent = cb ? (ch / cb * 100).toFixed(1) + '%' : '–';
+  document.getElementById('cache-sub').textContent = cb ? `覆盖 ${cdays} 天（自 ${firstC}）` : '暂无数据';
+}
+
+// ---- 自绘热力图:纯 SVG,格宽 = 容器宽 / 周数,自适应任意屏幕 ----
+function drawHeatmap(view, startDate) {
+  const container = document.getElementById('heatmap');
+  const weeks = Math.ceil((view.length + startDate.getDay()) / 7);
+  // 格宽锚定一年视图:桌面 365 天刚好满宽(~10px/格),30/90 天同格宽只是图窄,一年超宽滚动
+  const cw = container.clientWidth || 1000;
+  const GAP = 2, labelW = 16, topPad = 14;
+  const cell = Math.min((cw - labelW - (weeks - 1) * GAP) / weeks, (cw - labelW - 52 * GAP) / 53);
+  const W = labelW + weeks * (cell + GAP), H = topPad + 7 * (cell + GAP);
+  const monthNames = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const wdNames = ['', '一', '', '三', '', '五', ''];
+  let rects = '', mLabels = '', wLabels = '';
+  let lastMonth = -1;
+  view.forEach((d, i) => {
+    const date = new Date(d.date);
+    const dow = date.getDay();
+    const week = Math.floor((i + startDate.getDay()) / 7);
+    const x = labelW + week * (cell + GAP), y = topPad + dow * (cell + GAP);
+    // 颜色只表达一个含义：当日总量（引擎口径），用固定档位以便跨范围比较。
+    // 分来源 / 输入 / 输出 一律放在 tooltip 里 —— 试过在控制行再加两组切换控件，
+    // 结果标签被挤成两行（用户看了直接指出"不太好"），已回退。
+    const c = d.count < 100_000 ? 'var(--c0)' : d.count < 500_000 ? 'var(--c1)' : d.count < 2_000_000 ? 'var(--c2)' : d.count < 8_000_000 ? 'var(--c3)' : 'var(--c4)';
+    rects += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${cell.toFixed(1)}" height="${cell.toFixed(1)}" rx="2" fill="${c}" data-i="${i}"/>`;
+    if (dow === 0 && date.getMonth() !== lastMonth) {
+      lastMonth = date.getMonth();
+      mLabels += `<text x="${x.toFixed(1)}" y="9" font-size="9" fill="var(--muted)">${monthNames[lastMonth]}</text>`;
+    }
+  });
+  wdNames.forEach((n, dow) => {
+    if (n) wLabels += `<text x="0" y="${(topPad + dow * (cell + GAP) + cell * 0.75).toFixed(1)}" font-size="8" fill="var(--muted)">${n}</text>`;
+  });
+  container.innerHTML = `<svg viewBox="0 0 ${W.toFixed(0)} ${H.toFixed(0)}" style="width:${W.toFixed(0)}px;max-width:100%;height:auto;display:block;margin:0 auto">${wLabels}${mLabels}${rects}</svg>`;
+  // 悬停
+  container.querySelector('svg').addEventListener('mousemove', ev => {
+    const r = ev.target.closest('rect[data-i]');
+    if (!r) { tip.style.opacity = 0; return; }
+    const v = view[+r.dataset.i];
+    // 明细全部放这里 —— 用户的主张：热力图只表达总量，细分就该在 tooltip 里展开，
+    // 而不是塞控件把控制行挤到换行。
+    const hasSrc = !!v.src;
+    const inTok = v.prompt || 0, outTok = v.gen || 0;
+    // 各来源的占比按 token（输入+输出）算 —— 原「来源占比 · 近 14 天」面板并入这里后，
+    // 这个 tooltip 同时给出百分比和绝对值，那块面板就可以省掉了。
+    const _srcTok = (k, dd) => { const s = dd && dd[k]; return s ? ((s[1] || 0) + (s[2] || 0)) : 0; };
+    const totTok = hasSrc ? (SRC_META.reduce((s, m) => s + _srcTok(m[0], v.src), 0) || 1) : 1;
+    const srcRows = hasSrc ? SRC_META.map(([k, name, color]) => {
+      const s = v.src[k];                         // [次数, 输出, 输入]
+      if (!s || !s[0]) return '';
+      const sh = _srcTok(k, v.src) / totTok * 100;
+      return `<div style="display:flex;justify-content:space-between;gap:14px"><span style="color:${color}">● ${name}</span>`
+        + `<b>${sh.toFixed(1)}% · ${s[0]} 次 · 入 ${fmt(s[2] || 0)} / 出 ${fmt(s[1] || 0)}</b></div>`;
+    }).join('') : '';
+    const totN = hasSrc ? (SRC_META.reduce((s, [k]) => s + ((v.src[k] || [0])[0] || 0), 0) || 1) : 1;
+    tip.innerHTML = `<div style="color:#8a867e">${v.date}</div>`
+      + `<div style="font-size:14px;font-weight:700;margin:2px 0 2px">总 token ${fmt(v.count)}</div>`
+      + `<div style="color:#8a867e;font-size:11.5px;margin-bottom:5px">输入 ${fmt(inTok)} · 输出 ${fmt(outTok)}</div>`
+      + (hasSrc ? (srcRows || '<div style="color:#8a867e">这天没有来源记录</div>')
+                : '<div style="color:#8a867e">（这天是 llama 时代，没有来源维度）</div>')
+      + (hasSrc ? `<div style="margin-top:6px;height:4px;border-radius:2px;overflow:hidden;background:#333;display:flex">`
+          + SRC_META.map(([k, , color]) => { const n = (v.src[k] || [0])[0]; return n ? `<span style="width:${n / totN * 100}%;background:${color}"></span>` : ''; }).join('')
+          + `</div>` : '');
+    placeTip(ev);
+    tip.style.opacity = 1;
+  });
+  container.querySelector('svg').addEventListener('mouseleave', () => tip.style.opacity = 0);
+}
+window.addEventListener('resize', () => requestAnimationFrame(render));
+render();
+document.getElementById('range-seg').addEventListener('click', ev => {
+  if (ev.target.tagName !== 'BUTTON') return;
+  document.querySelectorAll('#range-seg button').forEach(b => b.classList.remove('on'));
+  ev.target.classList.add('on');
+  currentDays = +ev.target.dataset.d;
+  render();
+});
+
+// 按模型/按调用方:日志不含模型与来源维度,改用真实聚合的口径展示
+const m30b = data.slice(-30);
+const promptSum = m30b.reduce((s, d) => s + (d.prompt || 0), 0);
+const genSum = m30b.reduce((s, d) => s + (d.gen || 0), 0);
+// 模型名从数据来，不再写死在页面里 —— 写死的话换了引擎这里会一直显示旧名字
+// （之前那版甚至写了"(唯一在跑)"，一旦出现第二个模型它就成了错的断言）。
+// 前缀带引擎名，这样"什么时候换了引擎"在这一块也看得见。
+const _mName = (engine && engine.model) ? engine.model : '未知模型';
+const _eName = (engine && engine.name) ? engine.name : '';
+const models = [[(_eName ? _eName + ' · ' : '') + _mName, sum(m30b)/1e6]];
+// （原「按类型」面板已删除，uses 数组随之不再需要 —— 它的两个数字就是第一屏的近 30 天卡片。）
+function bars(el, rows) {
+  const max = Math.max(...rows.map(r => r[1]));
+  document.getElementById(el).innerHTML = rows.map(([n,v]) =>
+    `<div class="bar-row"><span class="name">${n}</span><span class="track"><span class="fill" style="display:block;width:${Math.max(v/max*100, 1.5)}%"></span></span><span class="num">${v.toFixed(1)}M</span></div>`).join('');
+}
+bars('by-model', models);
+// 「按类型」面板已删除：它的两个数字（输入/输出总量）就是第一屏态势行里的近 30 天卡片，
+// 完全重复。这里不再调用 bars('by-use', ...)，否则会去写一个已不存在的元素。
+
+// ---- 按来源堆叠柱（近 14 天）：本机 / 局域网 / frp 隧道 ----
+// 数据来自优先闸门的来源账本（days[].src = {local:[请求数,输出token], ...}）。
+// 高度按"请求数"画 —— 令牌数从今天这次改动之后才开始记录，历史行没有，
+// 混着画会骗人；令牌数放在悬停里单独显示，等积累几天再决定要不要按 token 画。
+const SRC_META = [['local', '本机', '#fbbf24'], ['lan', '局域网', '#b45309'], ['frp', 'frp 隧道', '#0ea5e9']];
+// （原「来源占比 · 近 14 天」面板已删除：它的信息并入热力图 tooltip 的每个来源行，
+//   那里现在同时给百分比和输入/输出绝对值 —— 一个面板不值得。）
+const last14 = data.slice(-14);
+
+// ---- 来源统计（近 30 天）----
+const m30 = data.slice(-30);
+const src30 = {};
+SRC_META.forEach(([k]) => {
+  let n = 0, tok = 0, days = 0;
+  m30.forEach(d => { const v = d.src && d.src[k]; if (v && v[0]) { n += v[0]; tok += v[1] || 0; days++; } });
+  src30[k] = { n, tok, days };
+});
+const n30 = Object.values(src30).reduce((s, v) => s + v.n, 0) || 1;
+const firstSrcDay = (data.find(d => d.src) || {}).date || '—';
+// 对端地址来自来源账本（全量累计，不只是 30 天窗口），按次数排序取前几个 ——
+// 这样"局域网其它机器"能直接看出是哪台（例如 SP3）。
+// 对端地址来自 data.json 的顶层字段 —— 注意页面里的 data 只是 days 数组，
+// 拿不到顶层（之前写成 data.traffic_by_source，所以永远是 undefined、面板空着）。
+// 这里再取一次文件，与 loadData/loadHours 同样的做法，不动既有加载流程。
+let TOP_ENGINES = [];   // 引擎时代列表（llama / Strata 的起止），画"切换点"标记用
+const TOP = await (async () => {
+  try {
+    const j = await (await fetch('data.json?ts=' + Date.now())).json();
+    TOP_ENGINES = j.engines || [];
+    return j.traffic_by_source || {};
+  } catch (_) { return {}; }
+})();
+document.getElementById('slot-stats').innerHTML =
+  SRC_META.map(([k, name, color]) => {
+    const v = TOP[k] || {};
+    const peers = v.peers ? Object.entries(v.peers).sort((a, b) => b[1] - a[1]) : [];
+    const peer = peers.length ? peers.slice(0, 2).map(([ip, n]) => ip + (n > 1 ? ' ×' + n : '')).join('、') : '—';
+    const N = src30[k].n;
+    // 每一行的细项；没有样本的显示 "—"，不编数
+    const rows = [
+      ['对端', peer],
+      ['排队 P50 / P90', `${v.wait_p50_ms ?? '—'} / ${v.wait_p90_ms ?? '—'} ms`],
+      ['占用 P50', v.hold_p50_ms ? (v.hold_p50_ms / 1000).toFixed(1) + ' s' : '—'],
+      ['上下文 P50 / P90', v.ctx_n ? `${fmt(v.ctx_p50)} / ${fmt(v.ctx_p90)}（${v.ctx_n} 次）` : '—'],
+      ['Prefill P50 / P90', v.pre_n ? `${v.pre_p50} / ${v.pre_p90} t/s（${v.pre_n} 次）` : '—'],
+      ['Decode P50 / P90', v.dec_n ? `${v.dec_p50} / ${v.dec_p90} t/s（${v.dec_n} 次）` : '—'],
+      ['输入 token（合计）', v.in_tokens ? fmt(v.in_tokens) : '—'],
+      ['输出 token（合计）', v.out_tokens ? fmt(v.out_tokens) : '—'],
+      ['失败 / 放弃', v.fail ? v.fail + ' 次' : '0 次'],
+    ];
+    return `<details class="src-det">
+      <summary class="src-sum">
+        <span class="src-name"><span class="caret">▸</span><i class="dot" style="background:${color}"></i>${name}</span>
+        <b class="src-tot">${N} 次 · ${Math.round(N / n30 * 100)}%${v.out_tokens ? ' · ' + fmt(v.out_tokens) + ' tok' : ''}${v.fail ? ' · 失败 ' + v.fail : ''}</b>
+      </summary>
+      <div class="src-body">
+        ${rows.map(r => `<div class="src-row"><span>${r[0]}</span><b>${r[1]}</b></div>`).join('')}
+      </div>
+    </details>`;
+  }).join('')
+  + `<div class="stat-line" style="border-top:1px solid var(--line);padding-top:8px"><span>有来源记录的交易日数</span><b>${Math.max(...SRC_META.map(([k]) => src30[k].days))} / 30 天</b></div>`
+  + `<div class="stat-line"><span>来源账本起始</span><b>${firstSrcDay}</b></div>`;
+
+// ---- 第一屏 · 长期态势：近 7 / 30 天 + 环比 ----
+// 口径：输入 = 引擎报的 prompt_tokens（含会话缓存复用的部分），输出 = generated。
+// 环比对照"上一个同长度窗口"（近 7 天 vs 前 7 天，近 30 天 vs 前 30 天）。
+// 注意：近 7 天窗口横跨了 llama→Strata 的切换，量级跳变是事实，不是 bug。
+function _win(n, offset) { return data.slice(data.length - n - offset, data.length - offset); }
+function _ssum(arr, f) { return arr.reduce((s, d) => s + (f(d) || 0), 0); }
+function _pctCell(id, cur, prev) {
+  const el = document.getElementById(id + '-sub');
+  if (!el) return;
+  if (!prev) { el.className = 'delta'; el.textContent = cur ? '上一窗口无数据' : '—'; return; }
+  const pct = (cur - prev) / prev * 100;
+  el.className = 'delta ' + (pct >= 0 ? 'up' : 'down');
+  el.textContent = `${pct >= 0 ? '↑' : '↓'} ${Math.abs(pct).toFixed(0)}% vs 上一窗口`;
+}
+function renderTrend() {
+  const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  const cur7 = _win(7, 0), prev7 = _win(7, 7), cur30 = _win(30, 0), prev30 = _win(30, 30);
+  const w7i = _ssum(cur7, d => d.prompt), w7o = _ssum(cur7, d => d.gen);
+  const w30i = _ssum(cur30, d => d.prompt), w30o = _ssum(cur30, d => d.gen);
+  set('t7in', fmt(w7i));   _pctCell('t7in', w7i, _ssum(prev7, d => d.prompt));
+  set('t7out', fmt(w7o));  _pctCell('t7out', w7o, _ssum(prev7, d => d.gen));
+  set('t30in', fmt(w30i)); _pctCell('t30in', w30i, _ssum(prev30, d => d.prompt));
+  set('t30out', fmt(w30o)); _pctCell('t30out', w30o, _ssum(prev30, d => d.gen));
+  // 失败/放弃 + 排队分位：取自来源账本（全量累计），不是"近 7 天"口径 —— 如实标注
+  const T = TOP || {};
+  const fails = Object.values(T).reduce((s, v) => s + (v.fail || 0), 0);
+  const done = Object.values(T).reduce((s, v) => s + (v.n || 0), 0);
+  set('failv', fails + ' 次');
+  set('failv-sub', done ? `累计 ${done} 次完成 · 失败率 ${(fails / (done + fails) * 100).toFixed(1)}%` : '累计');
+  const L = T.local || {}, A = T.lan || {};
+  set('waitv', `${L.wait_p50_ms ?? '–'} / ${L.wait_p90_ms ?? '–'} ms`);
+  set('waitv-sub', `累计 · 本机 ${L.n || 0} 次 · 局域网 ${A.n || 0} 次`);
+}
+renderTrend();
+
+// ---- 输入 → 输出 效率（每 1000 输入产出多少输出）· 近 30 天 ----
+// 为什么单列一张图：这台机器 输入:输出 ≈ 100:1，塞进同一根柱子时输出只有 ~0.2% 高、
+// 肉眼不可见（双色堆叠/并排双柱/100% 归一都救不了，几何决定的）。分开画、各自定标，
+// 才能既看总量又看效率；比值本身也是一条长期信号线（哪天效率突变一眼可见）。
+function renderRatio() {
+  const el = document.getElementById('ratio-chart');
+  if (!el) return;
+  const pts = data.slice(-30).filter(d => (d.prompt || 0) > 0);
+  if (!pts.length) { el.innerHTML = '<div class="hint">暂无数据</div>'; return; }
+  const val = d => (d.gen || 0) / (d.prompt || 0) * 1000;
+  // 纵轴对数刻度：效率值跨度约 10 倍（3.5 ~ 39.8），线性轴上低位那段几乎贴着基线。
+  const _lo = Math.max(0.1, +(Math.min(...pts.map(val)) * 0.8).toFixed(2));
+  const _hi = +(Math.max(...pts.map(val), 1) * 1.25).toFixed(2);
+  const lv = v => Math.max(v, _lo);
+  // viewBox 按容器实测宽度定（不是死值）：死值 1006 在 390px 手机上会被缩到 0.32×，
+  // 9px 的轴标签变成 2.9px 糊成一团 —— 数值检查全绿，但图上什么也读不出来。
+  // 窄屏同时把画布调高：宽:高 是固定的，W 变小则整图变扁（1006×130 在手机上只有 48px 高）。
+  const W = Math.max(320, Math.round(el.clientWidth || 1006)), H = W < 520 ? 200 : 130, P = { l: 44, r: 8, t: 10, b: 20 };
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  const x = i => P.l + (pts.length > 1 ? i / (pts.length - 1) * iw : iw / 2);
+  const y = v => P.t + ih - (Math.log10(lv(v)) - Math.log10(_lo)) / (Math.log10(_hi) - Math.log10(_lo)) * ih;
+  const line = pts.map((d, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(val(d)).toFixed(1)).join(' ');
+  // 1-2-5 阶梯（对数轴上做线性等分，刻度会全挤在上端）；同样按像素间距筛，避免尺子状
+  const yT = (() => {
+    const raw = [];
+    for (let e = Math.floor(Math.log10(_lo)); e <= Math.ceil(Math.log10(_hi)); e++)
+      for (const m of [1, 2, 5]) {
+        const v = m * 10 ** e;
+        if (v >= _lo * 0.999 && v <= _hi * 1.001) raw.push(+v.toFixed(2));
+      }
+    const out = [];
+    for (const v of raw) {
+      if (!out.length || y(out[out.length - 1]) - y(v) >= 26) out.push(v);
+      if (out.length === 5) break;
+    }
+    if (out.length < 2) out.push(_hi);
+    return out;
+  })();
+  const maxY = _hi;
+  // 横轴每约 1/6 标一个 —— 原来只标"每月 1 号"，30 天窗口里会出现 09-29 和 10-01 两个标签挤在左边
+  const step = Math.max(1, Math.ceil(pts.length / 6));
+  const xL = pts.map((d, i) => ({ i, t: d.date.slice(5) }))
+                .filter(o => o.i === 0 || o.i === pts.length - 1 || o.i % step === 0);
+  // 引擎切换点：这台机器的 token 口径在切换前后不同（llama 的 prompt 只算实读、
+  // Strata 的 prompt_tokens 含会话缓存复用），不标出来的话 10-15 那个 10 倍落差
+  // 会被读成"效率崩了"。这是必须标的，不是装饰。
+  // 注意：这里不能用 payload —— 它在第 600 行之后才声明（TDZ），
+  // 用它会在运行时抛错、把**后面所有渲染一起带停**（实测吞吐曲线就是这么消失的）。
+  const swDate = (((TOP_ENGINES || []).find(e => e.from) || {}).from || '').slice(0, 10);
+  const swIdx = swDate ? pts.findIndex(d => d.date === swDate) : -1;
+  // 标签往哪边放取决于标记在左半还是右半 —— 切换点正好是今天（最后一个点）时，
+  // 往右画会被面板右边缘切掉（看图才发现：数值检查只说"这条文字存在"，其实看不见）。
+  const swRight = swIdx > pts.length / 2;
+  const marker = swIdx >= 0
+    ? `<line x1="${x(swIdx).toFixed(1)}" y1="${P.t}" x2="${x(swIdx).toFixed(1)}" y2="${P.t + ih}" stroke="#b45309" stroke-width="1" stroke-dasharray="3 3"/>`
+      + `<text x="${(x(swIdx) + (swRight ? -4 : 4)).toFixed(1)}" y="${P.t + 9}" text-anchor="${swRight ? 'end' : 'start'}" font-size="9" fill="#b45309">llama → Strata</text>`
+    : '';
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`
+    + yT.map(v => `<line x1="${P.l}" y1="${y(v)}" x2="${W - P.r}" y2="${y(v)}" stroke="var(--line)" stroke-width="0.5"/>`
+        + `<text x="${P.l - 5}" y="${y(v) + 3}" text-anchor="end" font-size="9" fill="var(--muted)">${v.toFixed(1)}</text>`).join('')
+    + xL.map(o => `<text x="${x(o.i)}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${o.t}</text>`).join('')
+    + marker
+    + `<path d="${line}" fill="none" stroke="var(--derived)" stroke-width="1.6"/>`
+    + pts.map((d, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(val(d)).toFixed(1)}" r="1.7" fill="var(--derived)" data-i="${i}"/>`).join('')
+    + `</svg>`;
+  const g = el.querySelector('svg');
+  g.addEventListener('mousemove', ev => {
+    const r = g.getBoundingClientRect();
+    const px = (ev.clientX - r.left) / r.width * W;
+    const i = Math.max(0, Math.min(pts.length - 1, Math.round((px - P.l) / iw * (pts.length - 1))));
+    const d = pts[i];
+    tip.innerHTML = `<div style="color:#8a867e">${d.date}</div>`
+      + `<div style="font-size:14px;font-weight:700;margin:2px 0 4px">每千输入产出 ${val(d).toFixed(1)}</div>`
+      + `<div style="color:#8a867e;font-size:11.5px">输入 ${fmt(d.prompt || 0)} · 输出 ${fmt(d.gen || 0)}</div>`;
+    placeTip(ev); tip.style.opacity = 1;
+  });
+  g.addEventListener('mouseleave', () => tip.style.opacity = 0);
+}
+renderRatio();
+
+// ---- 吞吐趋势(近 14 天,按小时,分槽 × prefill/decode)----
+function renderTpsChart(elId, keyS0, keyS1, label) {
+  const cutStr = (() => { const d = new Date(today); d.setDate(d.getDate() - 14); return d.toISOString().slice(0, 10); })();
+  const pts = hoursData.filter(h => h.hour.slice(0, 10) >= cutStr && (h[keyS0] > 0 || (keyS1 && h[keyS1] > 0)));
+  const el = document.getElementById(elId);
+  if (!pts.length) { el.innerHTML = '<div class="hint">暂无数据</div>'; return; }
+  // 单序列引擎：slot1 恒为 0，不再画那条线（14 天窗口里 llama 时代还有残余，
+  // 所以用"整段全零就隐藏"判断，不写死切换日期）
+  const hasS1 = !!keyS1 && pts.some(p => p[keyS1] > 0);
+  // 同效率图：死值 1006 在手机上缩到 0.31×（轴标签 4px，糊掉）。
+  const _cw = (el && el.clientWidth) || 1006;
+  const W = Math.max(320, Math.round(_cw)), H = W < 520 ? 190 : 150, P = { l: 38, r: 8, t: 8, b: 20 };
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  // 纵轴对数刻度：某次 prefill 尖峰 ~9000 t/s 会让线性轴上的其余部分全挤在最底部
+  // （典型值 1000–2000 只占 11–22% 的高度，"尖峰压平一切"）。对数轴把常态摊开，尖峰依然可见。
+  // 0 值（空闲小时）用 _lo 兜底，避免 log(0)。
+  const _vals = pts.flatMap(p => hasS1 ? [p[keyS0], p[keyS1]] : [p[keyS0]]).filter(v => v > 0);
+  const _lo = Math.max(1, Math.round(Math.min(..._vals) * 0.8));
+  const _hi = Math.round(Math.max(..._vals, 5) * 1.25);
+  const lv = v => Math.max(v, _lo);
+  const x = i => P.l + i / (pts.length - 1) * iw;
+  const y = v => P.t + ih - (Math.log10(lv(v)) - Math.log10(_lo)) / (Math.log10(_hi) - Math.log10(_lo)) * ih;
+  const line = key => pts.map((p, i) => (i ? 'L' : 'M') + x(i).toFixed(1) + ',' + y(p[key]).toFixed(1)).join(' ');
+  // 1-2-5 阶梯的对数刻度（线性轴的"四等分"在对数轴上会挤在顶部）
+  const yTicks = (() => {
+    const raw = [];
+    for (let e = Math.floor(Math.log10(_lo)); e <= Math.ceil(Math.log10(_hi)); e++)
+      for (const m of [1, 2, 5]) {
+        const v = m * 10 ** e;
+        if (v >= _lo * 0.999 && v <= _hi * 1.001) raw.push(v >= 1000 ? Math.round(v) : +v.toFixed(1));
+      }
+    // 跨度可能有 4 个数量级（含 1 t/s 的空闲小时）→ 原始梯子十几级，图上像一把尺子。
+    // 按**像素间距**过滤：只留与上一级相距 ≥ 26px 的，最多 5 级。密度由高度决定，不由数量级决定。
+    const out = [];
+    for (const v of raw) {
+      if (!out.length || y(out[out.length - 1]) - y(v) >= 26) out.push(v);
+      if (out.length === 5) break;
+    }
+    if (out.length < 2) out.push(_hi);
+    return out;
+  })();
+  const maxY = _hi;
+  const xLabels = [];
+  for (let i = 0; i < pts.length; i++) {
+    const h = +pts[i].hour.slice(11);
+    if (h === 0) xLabels.push({ i, t: pts[i].hour.slice(5, 10).replace('-', '/') });
+  }
+  el.innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">` +
+    yTicks.map(v => `<line x1="${P.l}" y1="${y(v)}" x2="${W-P.r}" y2="${y(v)}" stroke="var(--line)" stroke-width="${v?0.5:1}"/><text x="${P.l-5}" y="${y(v)+3}" text-anchor="end" font-size="9" fill="var(--muted)">${v}</text>`).join('') +
+    xLabels.filter((l, i) => i % Math.max(1, Math.ceil(xLabels.length / 6)) === 0 || i === xLabels.length - 1).map(l => `<text x="${x(l.i)}" y="${H-6}" text-anchor="middle" font-size="9" fill="var(--muted)">${l.t}</text>`).join('') +
+    `<path d="${line(keyS0)}" fill="none" stroke="#fbbf24" stroke-width="1.6"/>` +
+    (hasS1 ? `<path d="${line(keyS1)}" fill="none" stroke="#b45309" stroke-width="1.6"/>` : '') +
+    `</svg>`;
+  const svg = el.querySelector('svg');
+  svg.addEventListener('mousemove', ev => {
+    const r = svg.getBoundingClientRect();
+    const px = (ev.clientX - r.left) / r.width * W;
+    const i = Math.round((px - P.l) / iw * (pts.length - 1));
+    if (i < 0 || i >= pts.length) return;
+    const p = pts[i];
+    tip.innerHTML = `<div style="color:#8a867e">${p.hour.replace('T',' ')}:00 · ${label}</div>`
+      + `<div style="display:flex;justify-content:space-between;gap:16px;margin-top:4px"><span style="color:#fbbf24">● 本地引擎</span><b>${p[keyS0] || '—'} t/s</b></div>`
+      + (hasS1 ? `<div style="display:flex;justify-content:space-between;gap:16px"><span style="color:#b45309">● slot1（llama 时代）</span><b>${p[keyS1] || '—'} t/s</b></div>` : '');
+    placeTip(ev);
+    tip.style.opacity = 1;
+  });
+  svg.addEventListener('mouseleave', () => tip.style.opacity = 0);
+}
+renderTpsChart('tps-dec', 's0_dec_tps', 's1_dec_tps', 'decode');
+renderTpsChart('tps-pre', 's0_pre_tps', 's1_pre_tps', 'prefill');
+
+// ================= 新增面板（A'~F）=================
+// 这些面板的数据源只有 Strata 时代（自 10-15），与范围切换无关，故独立渲染一次。
+const payload = await (await fetch('data.json?ts=' + Date.now())).json();
+
+// ---- 健康度 · 按天收尾状态 ----
+// 只算真实请求的结局：stop(正常) / length(触顶截断) / cancel(被取消) / error(失败)。
+// 排除 ghost —— 引擎内部微回合（hold≈0），不是用户请求，算进去会灌水。
+// 必须有这一块：账本 v2 之前，失败/取消的请求在数据里一行都不留，整个维度不可见。
+function renderHealth() {
+  const el = document.getElementById('health-chart');
+  if (!el) return;
+  const F = payload.finish_days || {};
+  // 把 abandoned（客户端中途离开）并进 cancel：都是"没跑完"。这样做的更重要原因是
+  // 健壮性 —— 引擎将来多出一种收尾状态时，不会被图例静默漏掉、导致柱子少一截。
+  for (const dd of Object.keys(F)) {
+    if (F[dd].abandoned) { F[dd].cancel = (F[dd].cancel || 0) + F[dd].abandoned; delete F[dd].abandoned; }
+  }
+  const ORDER = [['stop', '正常结束', 'var(--st-ok)'], ['length', '触顶截断', 'var(--st-trunc)'],
+                 ['cancel', '被取消/放弃', 'var(--st-cancel)'], ['error', '失败', 'var(--st-fail)']];
+  const days = Object.keys(F).sort();
+  if (!days.length) { el.innerHTML = '<div class="hint">暂无数据（自 10-15 起）</div>'; return; }
+  const W = Math.max(320, Math.round(el.clientWidth || 1006)), H = W < 520 ? 220 : 150, P = { l: 40, r: 8, t: 10, b: 20 };
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  const tot = d => ORDER.reduce((s, [k]) => s + (F[d][k] || 0), 0);
+  const maxY = Math.max(...days.map(tot), 1) * 1.15;
+  const bw = Math.min(46, iw / days.length * 0.62);
+  const x = i => P.l + (i + 0.5) * (iw / days.length);
+  const y = v => P.t + ih - v / maxY * ih;
+  const yT = [0, .5, 1].map(f => Math.round(maxY * f));
+  let bars = '', xl = '';
+  days.forEach((d, i) => {
+    let acc = 0;
+    for (const [k, , col] of ORDER) {
+      const v = F[d][k] || 0;
+      if (!v) continue;
+      const h = v / maxY * ih;
+      bars += `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${(y(acc) - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${col}" data-d="${d}"/>`;
+      acc += v;
+    }
+    bars += `<text x="${x(i).toFixed(1)}" y="${(y(tot(d)) - 3).toFixed(1)}" text-anchor="middle" font-size="9" fill="var(--muted)">${tot(d)}</text>`;
+    if (i % Math.max(1, Math.ceil(days.length / 6)) === 0 || i === days.length - 1)
+      xl += `<text x="${x(i).toFixed(1)}" y="${H - 6}" text-anchor="middle" font-size="9" fill="var(--muted)">${d.slice(5)}</text>`;
+  });
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`
+    + yT.map(v => `<line x1="${P.l}" y1="${y(v)}" x2="${W - P.r}" y2="${y(v)}" stroke="var(--line)" stroke-width="0.5"/>`
+        + `<text x="${P.l - 5}" y="${y(v) + 3}" text-anchor="end" font-size="9" fill="var(--muted)">${v}</text>`).join('')
+    + bars + xl + `</svg>`
+    + `<div class="legend" style="justify-content:flex-start;flex-wrap:wrap;gap:6px 18px;margin-top:8px">`
+    + ORDER.map(([k, name, col]) => {
+        const n = days.reduce((s, d) => s + (F[d][k] || 0), 0);
+        return `<span style="display:inline-flex;align-items:center;gap:5px"><span class="sw" style="background:${col}"></span>${name} <b>${n}</b></span>`;
+      }).join('')
+    + `</div>`
+    + `<div class="hint" style="margin-top:6px">共 ${days.reduce((s, d) => s + tot(d), 0)} 个真实请求（已排除引擎内部微回合 ${Object.values(F).reduce((s, m) => s + (m.ghost || 0), 0)} 次）</div>`;
+  const svg = el.querySelector('svg');
+  svg.addEventListener('mousemove', ev => {
+    const r = svg.getBoundingClientRect();
+    const px = (ev.clientX - r.left) / r.width * W;
+    const i = Math.max(0, Math.min(days.length - 1, Math.floor((px - P.l) / (iw / days.length))));
+    const d = days[i];
+    tip.innerHTML = `<div style="color:#8a867e">${d}</div>`
+      + ORDER.map(([k, name, col]) => F[d][k] ? `<div style="display:flex;justify-content:space-between;gap:16px"><span style="color:${col}">● ${name}</span><b>${F[d][k]}</b></div>` : '').join('')
+      + `<div style="color:#8a867e;font-size:11.5px;margin-top:4px">共 ${tot(d)} 个请求</div>`;
+    placeTip(ev); tip.style.opacity = 1;
+  });
+  svg.addEventListener('mouseleave', () => tip.style.opacity = 0);
+}
+renderHealth();
+
+// ---- 右侧纵向索引：滚动高亮 + 点击平滑跳转 ----
+// 判据用"分节顶边是否越过视口 1/3 处"，而不是 IntersectionObserver 的可见比例 ——
+// 面板高度差异极大（服务压力 180px、热力图 400px），按可见比例会在长面板处卡住不切。
+(() => {
+  const rail = document.getElementById('rail');
+  if (!rail) return;
+  const secs = [...document.querySelectorAll('.sec')];
+  const btns = [...rail.querySelectorAll('button')];
+  if (secs.length !== btns.length) return;      // 分节数与索引不符就不做，宁可没有也不要错位
+  const mark = () => {
+    const line = innerHeight / 3;
+    let cur = -1;
+    secs.forEach((s, i) => { if (s.getBoundingClientRect().top <= line) cur = i; });
+    btns.forEach((b, i) => b.classList.toggle('on', i === cur));
+    // 弹出面板里的条目也高亮当前分段。这里用 DOM 查询而不是提前持有的引用：
+    // mark() 在面板构建之前就会被调用一次，引用未初始化的 const 会抛 TDZ 并把整个模块带停。
+    document.querySelectorAll('#fab-panel button').forEach((b, i) => {
+      b.classList.toggle('on', b.dataset.go === 'sec' && i === cur);
+    });
+  };
+  btns.forEach((b, i) => b.addEventListener('click', () => {
+    secs[i].scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
+  addEventListener('scroll', () => requestAnimationFrame(mark), { passive: true });
+  addEventListener('resize', mark);
+  mark();
+
+  // 手机：右下角悬浮按钮 → 弹出索引（4 个分节 + 返回顶部）→ 选中即跳转并收起。
+  // 原来的"右边缘左滑滑出"被否掉了：一是常驻/半常驻都占内容，二是边缘手势容易和系统手势抢。
+  const fab = document.getElementById('fab');
+  const panel = document.getElementById('fab-panel');
+  // Feather 风格图标（内联 path + currentColor，不用 emoji）：每段给一个语义图标，
+  // 而不是同一个箭头重复四次 —— 重复的箭头看着像占位符。
+  const svg = d => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"'
+    + ' stroke-linecap="round" stroke-linejoin="round">' + d + '</svg>';
+  const ICON = {
+    '现在': svg('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>'),                       // activity 脉搏
+    '长期': svg('<path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/>'),    // trending-up 趋势
+    '性能': svg('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'),                // zap 闪电
+    '明细': svg('<path d="M3 3h18v18H3z"/><path d="M3 9h18M9 3v18"/>'),         // table 表格
+    'top': svg('<path d="M12 19V5M5 12l7-7 7 7"/>'),                           // arrow-up
+  };
+  if (panel) {
+    panel.innerHTML = '<div class="title">跳转到</div>'
+      + secs.map(s => {
+          const t = s.textContent.trim();
+          return `<button type="button" data-go="sec">${ICON[t] || ICON['明细']}${t}</button>`;
+        }).join('')
+      + '<div class="sep"></div>'
+      + `<button type="button" data-go="top">${ICON.top}返回顶部</button>`;
+  }
+  const closePanel = () => { if (panel) panel.classList.remove('open'); };
+  if (panel) {
+    [...panel.querySelectorAll('button')].forEach((b, i) => b.addEventListener('click', () => {
+      if (b.dataset.go === 'top') scrollTo({ top: 0, behavior: 'smooth' });
+      else if (secs[i]) secs[i].scrollIntoView({ behavior: 'smooth', block: 'start' });
+      closePanel();
+    }));
+  }
+  if (fab && panel) {
+    fab.addEventListener('click', e => { e.stopPropagation(); panel.classList.toggle('open'); });
+    panel.addEventListener('click', e => e.stopPropagation());
+    addEventListener('click', closePanel);          // 点空白处收起
+  }
+})();
+
+// ---- 窗口尺寸变化后重画图表 ----
+// 每张图的 viewBox 都是按"渲染当时"的容器宽度算的（这正是窄屏不糊的原因），所以宽度变了必须重算：
+// 手机横竖屏切换、桌面拉窗口，否则图会按旧比例被拉伸。
+// 250ms 去抖 + 24px 阈值：拖动窗口、手机地址栏收缩都不会触发重画。
+(() => {
+  let t = 0, lastW = innerWidth;
+  const redraw = () => {
+    if (Math.abs(innerWidth - lastW) < 24) return;
+    lastW = innerWidth;
+    for (const [name, fn] of [
+      ['trend', renderTrend],
+      ['ratio', renderRatio],
+      ['tps-dec', () => renderTpsChart('tps-dec', 's0_dec_tps', 's1_dec_tps', 'decode')],
+      ['tps-pre', () => renderTpsChart('tps-pre', 's0_pre_tps', 's1_pre_tps', 'prefill')],
+      ['health', renderHealth],
+      ['pressure', renderPressure],
+      ['heatmap', render],        // render() 无参，内部按 currentDays 重画热力图 + 两张 KPI 卡片
+    ]) {
+      try { fn(); } catch (e) { console.warn('重画失败:', name, e); }
+    }
+  };
+  addEventListener('resize', () => { clearTimeout(t); t = setTimeout(redraw, 250); });
+  addEventListener('orientationchange', () => setTimeout(redraw, 350));
+})();
+// 桌面端浮层也做一次贴边收拢（窄屏另有 CSS 改成底部固定卡片）
+function placeTip(ev) {
+  const pad = 8, r = tip.getBoundingClientRect();
+  let x = ev.clientX + 14, y = ev.clientY + 14;
+  if (x + r.width > innerWidth - pad) x = Math.max(pad, ev.clientX - r.width - 14);
+  if (y + r.height > innerHeight - pad) y = Math.max(pad, ev.clientY - r.height - 14);
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+const avg = a => a.length ? (a.reduce((s, x) => s + x, 0) / a.length).toFixed(0) : '–';
+
+// ---- A' 解码速率 × 投机接受率 ----
+(() => {
+  // 这个散点面板已删除：它的信息在「投机解码效率 · 按天」里。
+  // 代码保留但提前返回 —— 否则会去写一个已不存在的元素、把整段脚本停掉。
+  const el = document.getElementById('scatter');
+  if (!el) return;
+  const pts = (payload.scatter || []).filter(p => p.acc !== null);
+  if (!pts.length) { el.innerHTML = '<div class="hint">暂无数据</div>'; return; }
+  // viewBox 按"最窄容器"取（窄屏单列时面板内容宽约 320px），这样任何视口都不会被缩小：
+  // 缩小会让 9px 字号变成 5-6px 糊成一团（数值检查看不出，看图才发现）。放大是无害的。
+  const W = 340, H = 170, P = { l: 30, r: 8, t: 10, b: 24 };
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  const maxRate = Math.max(...pts.map(p => p.rate)) * 1.08;
+  const x = a => P.l + a * iw;
+  const y = r => P.t + ih - r / maxRate * ih;
+  const yTicks = [0, .25, .5, .75, 1].map(f => Math.round(maxRate * f));
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`
+    + yTicks.map(v => `<line x1="${P.l}" y1="${y(v)}" x2="${W - P.r}" y2="${y(v)}" stroke="var(--line)" stroke-width="${v ? 0.5 : 1}"/>`
+      + `<text x="${P.l - 5}" y="${y(v) + 3}" text-anchor="end" font-size="9" fill="var(--muted)">${v}</text>`).join('')
+    + [0, .2, .4, .6, .8, 1].map(a => `<text x="${x(a)}" y="${H - 10}" text-anchor="middle" font-size="9" fill="var(--muted)">${Math.round(a * 100)}%</text>`).join('')
+    + `<text x="${P.l - 5}" y="${P.t - 2}" text-anchor="end" font-size="9" fill="var(--muted)">t/s</text>`
+    + pts.map(p => `<circle cx="${x(p.acc).toFixed(1)}" cy="${y(p.rate).toFixed(1)}" r="3.2" fill="#d97706" opacity=".5"/>`).join('')
+    + '</svg>';
+  const svg = el.querySelector('svg');
+  svg.addEventListener('mousemove', ev => {
+    const r = svg.getBoundingClientRect();
+    const mx = (ev.clientX - r.left) / r.width * W, my = (ev.clientY - r.top) / r.height * H;
+    let best = null, bd = 1e9;
+    for (const p of pts) { const dx = x(p.acc) - mx, dy = y(p.rate) - my, d = dx * dx + dy * dy; if (d < bd) { bd = d; best = p; } }
+    if (!best || bd > 1200) { tip.style.opacity = 0; return; }
+    const tm = new Date(best.t * 1000);
+    tip.innerHTML = `<div style="color:#8a867e">${tm.getMonth() + 1}/${tm.getDate()} ${String(tm.getHours()).padStart(2, '0')}:${String(tm.getMinutes()).padStart(2, '0')}</div>`
+      + `<div style="font-size:14px;font-weight:700;margin:2px 0 6px">${best.rate} t/s</div>`
+      + `<div style="display:flex;justify-content:space-between;gap:16px"><span>投机接受率</span><b>${Math.round(best.acc * 100)}%</b></div>`
+      + `<div style="display:flex;justify-content:space-between;gap:16px"><span>上下文</span><b>${fmt(best.depth)}</b></div>`;
+    placeTip(ev); tip.style.opacity = 1;
+  });
+  svg.addEventListener('mouseleave', () => tip.style.opacity = 0);
+  // 量化：掉速是不是真由接受率主导
+  const n = pts.length, sx = pts.reduce((s, p) => s + p.acc, 0), sy = pts.reduce((s, p) => s + p.rate, 0);
+  const sxy = pts.reduce((s, p) => s + p.acc * p.rate, 0), sxx = pts.reduce((s, p) => s + p.acc * p.acc, 0), syy = pts.reduce((s, p) => s + p.rate * p.rate, 0);
+  const den = Math.sqrt((n * sxx - sx * sx) * (n * syy - sy * sy));
+  const rho = den ? (n * sxy - sx * sy) / den : 0;
+  const short = pts.filter(p => p.out < 300), long = pts.filter(p => p.out > 800);
+  const hi = pts.filter(p => p.acc >= 0.8);
+  document.getElementById('scatter-kvs').innerHTML =
+    `<span>相关系数 r = <b>${rho.toFixed(2)}</b>（偏弱：接受率只解释一部分）</span>`
+    + `<span>接受率 ≥80% 平均 <b>${avg(hi.map(p => p.rate))} t/s</b>（${hi.length} 次）</span>`
+    + `<span>输出 &lt;300 token 平均 <b>${avg(short.map(p => p.rate))} t/s</b>（${short.length} 次）</span>`
+    + `<span>输出 &gt;800 token 平均 <b>${avg(long.map(p => p.rate))} t/s</b>（${long.length} 次 · 持续生成的真实水平）</span>`;
+})();
+
+// ---- B 上下文长度分布 + 首 token 延迟 ----
+(() => {
+  const rows = Object.entries(payload.depth_hist || {});
+  const max = Math.max(...rows.map(r => r[1]), 1);
+  document.getElementById('depth-hist').innerHTML = rows.map(([k, v]) =>
+    `<div class="hbar"><span class="hb-name">${k}</span>`
+    + `<span class="hb-track"><span class="hb-fill" style="width:${v ? Math.max(v / max * 100, 1.5) : 0}%"></span></span>`
+    + `<span class="hb-num">${v} 次</span></div>`).join('');
+  const t = Object.values(payload.ttft || {})[0] || {};
+  document.getElementById('ttft-kvs').innerHTML = t.n
+    ? `<span>首 token 延迟（${t.n} 次）</span><span>中位 <b>${t.p50}s</b></span><span>p90 <b>${t.p90}s</b></span><span>最长 <b>${t.max}s</b></span>`
+    : '<span>暂无数据</span>';
+})();
+
+// ---- C 投机解码效率（按天）----
+(() => {
+  const rows = data.filter(d => d.draft_offered);
+  const el = document.getElementById('mtp-bars');
+  if (!rows.length) { el.innerHTML = '<div class="hint">暂无数据</div>'; return; }
+  el.innerHTML = rows.map(d => {
+    const r = d.draft_accepted / d.draft_offered * 100;
+    return `<div class="hbar"><span class="hb-name">${d.date.slice(5)}</span>`
+      + `<span class="hb-track"><span class="hb-fill" style="width:${r.toFixed(1)}%"></span></span>`
+      + `<span class="hb-num">${r.toFixed(1)}% · ${(d.draft_offered / 1000).toFixed(0)}K</span></div>`;
+  }).join('');
+})();
+
+// ---- D 服务压力（时间轴条带：格宽=真实时间间隔，不是"一格=一次采样"）----
+// 具名函数：viewBox 按容器宽度算，尺寸变化后必须能重画。原来写成匿名 IIFE，重画列表里就漏了它
+// （用户："resize 重新渲染好像没有覆盖服务压力卡片吧？"）。
+function renderPressure() {
+  const p = payload.pressure || {}, s = p.samples || [];
+  const strip = document.getElementById('pressure-strip');
+  const toMin = t => { const [h, m] = String(t).split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+  document.getElementById('pressure-kvs').innerHTML = s.length
+    ? `<span>有请求在处理 <b>${p.busy_pct}%</b> 的采样</span>`
+      + `<span>发生排队 <b>${p.deferred_n}</b> 次（共 ${p.deferred_total} 个请求等过）</span>`
+      + `<span>平均 <b>${p.req_per_hour}</b> 请求/小时</span>`
+      + `<span>悬停或点格子看单次详情</span>`
+    : '<span>暂无数据</span>';
+  if (!s.length) { strip.innerHTML = ''; return; }
+  // 按【固定时段】归并：每格 = 5 分钟。之前是"一格 = 一次采样"再按真实间隔拉宽，
+  // 结果格宽 1.2–10.8 参差不齐，既不像图例也不像时间轴（用户指出不对）。
+  // 采样本身 1–6 分钟一次，所以 5 分钟桶大多装 1 次采样，偶尔 2 次 —— 归并后等宽。
+  const BUCKET = 5;
+  const t0 = Math.floor(toMin(s[0].t) / BUCKET) * BUCKET;
+  const mins = s.map(x => { let m = toMin(x.t); while (m < t0) m += 1440; return m; });
+  const t1 = mins[mins.length - 1];
+  const n = Math.floor((t1 - t0) / BUCKET) + 1;
+  const B = Array.from({ length: n }, () => ({ ns: 0, busy: 0, deferred: 0, dreq: 0 }));
+  for (let i = 0; i < s.length; i++) {
+    const b = B[Math.min(n - 1, Math.floor((mins[i] - t0) / BUCKET))];
+    b.ns += 1; b.dreq += (s[i].dreq || 0);
+    b.deferred = Math.max(b.deferred, s[i].deferred || 0);   // 格内出现过排队 ⇒ 整格标红
+    b.busy = Math.max(b.busy, s[i].busy || 0);
+  }
+  const hm = m => String(Math.floor(m / 60) % 24).padStart(2, '0') + ':' + String(Math.round(m) % 60).padStart(2, '0');
+  // viewBox 必须按实际容器宽度定：原来是死值 340（照窄屏定的），却用 width:100%;height:auto
+  // 铺在 1006px 通栏里 ⇒ 整幅等比放大 3 倍：格子变 45px 高、左端 "12:00" 被挤出画布只剩 "2:00"。
+  // 这两件事数值检查都看不出来，是量几何+看图才发现的。热力图早就是按 clientWidth 定的。
+  const W = Math.max(320, Math.round(strip.clientWidth || 1006));
+  const H = 30, P = { l: 4, r: 4, t: 4, b: 17 };   // 细缎带：条高 9px，下面是小时刻度
+  const iw = W - P.l - P.r, ih = H - P.t - P.b;
+  const cw = iw / n, gap = cw > 6 ? 1.2 : 0.5;
+  let bars = '';
+  for (let i = 0; i < n; i++) {
+    const b = B[i], x = P.l + i * cw;
+    // 无采样 ⇒ 空心虚线，避免把"没数据"画成"空闲"
+    // 空闲不能用 --c0：暗色主题下 --c0(#2a2719) 与卡片底色(#201e18)几乎一致，
+    // 空闲格看上去和"无采样"的空心格一样 ⇒ 状态编码失效（看截图才发现，数值都对）。
+    const fill = b.deferred ? '#b91c1c' : b.busy ? 'var(--c2)' : b.ns ? 'var(--line)' : 'none';
+    const edge = b.ns ? '' : ' stroke="var(--line)" stroke-width="0.5" stroke-dasharray="1.5 1.5"';
+    bars += `<rect x="${(x + gap / 2).toFixed(2)}" y="${P.t}" width="${Math.max(cw - gap, 1).toFixed(2)}" height="${ih}" rx="1.5" fill="${fill}"${edge} data-i="${i}"/>`;
+  }
+  let ticks = '';
+  const axisSpan = n * BUCKET;
+  for (let m = Math.ceil(t0 / 60) * 60; m <= t1 + BUCKET; m += 60) {
+    const x = P.l + (m - t0) / axisSpan * iw;
+    const hh = String(Math.floor(m / 60) % 24).padStart(2, '0') + ':00';
+    // 两端的刻度必须换锚点，否则文字会溢出画布被切掉（左端 "12:00" 只剩 "2:00" 就是这么来的）
+    const anchor = x < 16 ? 'start' : x > W - 16 ? 'end' : 'middle';
+    ticks += `<line x1="${x.toFixed(1)}" y1="${P.t}" x2="${x.toFixed(1)}" y2="${P.t + ih}" stroke="var(--line)" stroke-width="0.5"/>`
+      + `<text x="${x.toFixed(1)}" y="${H - 5}" text-anchor="${anchor}" font-size="9" fill="var(--muted)">${hh}</text>`;
+  }
+  // 图例写在条带正下方：之前塞在 KVs 行尾的小色点太不显眼，用户直接没看见。
+  // 注意色块必须处在 flex 容器里才会被 blockify —— 普通 <span> 是 inline，宽高一律失效
+  // （填充条刚踩过同样的坑），所以每个图例项自己就是 inline-flex。
+  strip.innerHTML = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">${bars}${ticks}</svg>`
+    + `<div class="legend" style="justify-content:flex-start;flex-wrap:wrap;gap:6px 18px;margin-top:6px">`
+    + `<span style="display:inline-flex;align-items:center;gap:5px"><span class="sw" style="background:var(--line)"></span>灰 = 空闲</span>`
+    + `<span style="display:inline-flex;align-items:center;gap:5px"><span class="sw" style="background:var(--c2)"></span>琥珀 = 正在处理</span>`
+    + `<span style="display:inline-flex;align-items:center;gap:5px"><span class="sw" style="background:#b91c1c"></span>红 = 有请求在排队</span>`
+    + `</div>`
+    + `<div class="hint" style="margin-top:6px">每格 = ${BUCKET} 分钟（按时间归并，故等宽）；格内出现过排队即整格标红；空心虚线 = 该时段没有采样</div>`;
+  // 悬停显示该时段的汇总；窄屏没有悬停，点按走同一套处理
+  const show = ev => {
+    const cell = ev.target.closest('rect[data-i]');
+    if (!cell) { tip.style.opacity = 0; return; }
+    const i = +cell.dataset.i, b = B[i];
+    if (!b) return;
+    const from = t0 + i * BUCKET;
+    const state = b.deferred ? `有 ${b.deferred} 个请求在排队` : b.busy ? '正在处理请求' : '空闲';
+    tip.innerHTML = `<div style="color:#8a867e">${hm(from)}–${hm(from + BUCKET)}</div>`
+      + `<div style="font-size:14px;font-weight:700;margin:2px 0 6px">${b.ns ? state : '该时段没有采样'}</div>`
+      + (b.ns
+          ? `<div style="display:flex;justify-content:space-between;gap:16px"><span>本段新请求</span><b>${b.dreq} 个</b></div>`
+            + `<div style="display:flex;justify-content:space-between;gap:16px"><span>采样</span><b>${b.ns} 次</b></div>`
+          : '');
+    placeTip(ev); tip.style.opacity = 1;
+  };
+  strip.addEventListener('mousemove', show);
+  strip.addEventListener('click', show);
+  strip.addEventListener('mouseleave', () => tip.style.opacity = 0);
+}
+renderPressure();
+
+// ---- E 引擎切换说明 ----
+(() => {
+  const es = payload.engines || [];
+  document.getElementById('switch-note').textContent = es.length === 2
+    ? `引擎切换：${es[0].to.slice(5, 16).replace('T', ' ')} 之前是 ${es[0].name}，之后是 ${es[1].name}（自 ${es[1].from.slice(5, 16).replace('T', ' ')}）`
+    : '';
+})();
+
+// ---- F 峰值与长尾 ----
+// 两张榜都从账本重建（data.req_top / data.req_slow）：列里有"谁跑的 / 排了多久 / 占用多久"。
+// 为什么必须有下面那张：只放最快的那几次是幻觉 —— 它只说明上限，而且卡死/失败的请求
+// rate=0，永远进不了快榜（今天就有一条跑了 5 分 55 秒、产出 0 的请求）。慢的那几次才是问题。
+(() => {
+  const el = document.getElementById('top-table');
+  if (!el) return;
+  const SRC = { local: ['本机', '#fbbf24'], lan: ['局域网', '#b45309'], frp: ['frp 隧道', '#0ea5e9'],
+                other: ['其它', 'var(--muted)'], internal: ['内部', 'var(--muted)'] };
+  const cell = r => {
+    const [nm, col] = SRC[r.src] || [r.src, 'var(--muted)'];
+    const ua = r.ua ? ` title="${r.ua}"` : '';
+    return '<tr>'
+      + `<td data-th="时间">${r.t.slice(5)}</td>`
+      + `<td data-th="来源"${ua}><i class="dot" style="background:${col};margin:0 6px 0 0"></i>${nm}</td>`
+      + `<td data-th="decode">${r.rate ? r.rate + ' t/s' : '—'}</td>`
+      + `<td data-th="上下文">${r.ctx ? fmt(r.ctx) : '—'}</td>`
+      + `<td data-th="输出">${r.gen ? r.gen + ' tok' : '—'}</td>`
+      + `<td data-th="排队 / 占用">${r.wait}ms / ${r.hold}s${r.reused ? '<span style="white-space:nowrap"> · 缓存</span>' : ''}</td>`
+      + '</tr>';
+  };
+  // 表头只在宽屏出现；手机上隐藏它，改成每格用 data-th 自带标签。
+  // 原因：手机上是 flex 折行布局，"表头与数据折行位置一致"这个假设不成立 ——
+  // 实测表头排成了 时间/上下文/来源，而数据行是 时间/来源/decode，列对不上。
+  const head = '<tr class="req-head"><th>时间</th><th>来源</th><th>decode</th><th>上下文</th><th>输出</th><th>排队 / 占用</th></tr>';
+  const fast = payload.req_top || [], slow = payload.req_slow || [];
+  if (!fast.length && !slow.length) { el.innerHTML = '<tr><td class="hint">暂无数据（自 10-15 起）</td></tr>'; return; }
+  el.innerHTML =
+    '<tr><td colspan="6" class="tbl-sec">最快 · 按 decode t/s</td></tr>' + head + fast.map(cell).join('')
+    + '<tr><td colspan="6" class="tbl-sec">最慢 · 按占用时长（卡住与失败都在这里）</td></tr>' + head + slow.map(cell).join('');
+})();
+
+// ---- G 按来源（本机 / 局域网 / frp 隧道）----
+// 数据来自引擎包装层的优先闸门账本：每完成一次请求追加一行 {来源, 排队等待, 占用时长}。
+// 排队时长就是优先级的直接效果 —— 本机/局域网应当接近 0，隧道流量会更长。
+(() => {
+  // 这个表格已删除：它的内容是「来源统计 · 近 30 天」可展开行的真子集
+  // （后者多了输入/输出总量、上下文与 p/d 分位、失败计数）。保留计算但提前返回。
+  const t = payload.traffic_by_source || {};
+  const el = document.getElementById('src-table');
+  if (!el) return;
+  const note = document.getElementById('src-note');
+  const NAME = { local: '本机（127.0.0.1）', lan: '局域网其它机器', frp: 'frp / stcp 隧道', other: '其它来源', internal: '服务内部操作' };
+  const rows = Object.entries(t).sort((a, b) => b[1].n - a[1].n);
+  if (!rows.length) {
+    el.innerHTML = '<tr><td class="hint">还没有来源数据 —— 本次改动上线后开始记录</td></tr>';
+    note.textContent = '每完成一次请求追加一行；排队时长反映队列优先级是否生效。';
+    return;
+  }
+  const total = rows.reduce((s, kv) => s + kv[1].n, 0);
+  el.innerHTML = '<tr><th>来源</th><th>请求</th><th>占比</th><th>排队 p50 / p90</th><th>占用 p50</th></tr>'
+    + rows.map(([k, v]) => `<tr><td>${NAME[k] || k}</td><td>${v.n}</td><td>${(v.n / total * 100).toFixed(0)}%</td>`
+      + `<td>${v.wait_p50_ms} / ${v.wait_p90_ms} ms</td><td>${(v.hold_p50_ms / 1000).toFixed(1)} s</td></tr>`).join('');
+  const f = t.frp, l = t.local;
+  const n = rows.reduce((s, kv) => s + kv[1].n, 0);
+  note.textContent = '队列优先级：本机与局域网先拿到回合，frp 隧道让行。'
+    + (n < 20 ? `（目前样本只有 ${n} 次，p90 波动大 —— 等积累几天再看趋势）` : '')
+    + (f && l ? ` 参考：隧道 p50 等待 ${f.wait_p50_ms} ms，本机 ${l.wait_p50_ms} ms。` : '');
+})();
+
+// ---- 明暗主题 ----
+const themeBtn = document.getElementById('theme-btn');
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem('token-usage-theme', t); } catch (_) {}
+}
+setTheme((() => {
+  try { return localStorage.getItem('token-usage-theme'); } catch (_) { return null; }
+})() || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+themeBtn.addEventListener('click', () =>
+  setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+</script>
+</body>
+</html>

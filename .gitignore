@@ -1,0 +1,15 @@
+# 真实数据与运行产物：仓库里只放代码和脱敏样片
+data.json
+source_ledger.jsonl
+strata_requests.jsonl
+usage.db
+usage.db-wal
+usage.db-shm
+*.log
+*.bak-*
+crontab.bak-*
+shots/
+vendor/
+__pycache__/
+*.pyc
+.DS_Store
