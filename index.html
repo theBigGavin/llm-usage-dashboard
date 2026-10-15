@@ -443,8 +443,9 @@ function render() {
   // 等效成本跟随选中范围：DeepSeek V4-Flash 官网人民币价,忙闲分时(聚合端按行计价,见 aggregate_all.py)。
   // 账本自 10-15 才有,早于此的天没有 cost 字段、不计入——卡副标注明口径。
   const costSum = view.reduce((s, d) => s + (d.cost || 0), 0);
+  const elecSum = view.reduce((s, d) => s + (d.wh || 0), 0) / 1000 * 0.5283;  // 边际电量×江苏一档电价
   document.getElementById('saved').textContent = '¥' + (costSum >= 100 ? Math.round(costSum) : costSum.toFixed(2));
-  document.getElementById('saved-sub').textContent = `近 ${currentDays === 365 ? '一年' : currentDays + ' 天'} · DeepSeek V4-Flash 忙闲分时 · 自 10-15`;
+  document.getElementById('saved-sub').textContent = `近 ${currentDays === 365 ? '一年' : currentDays + ' 天'} · V4-Flash 忙闲分时 · 电费仅 ¥${elecSum.toFixed(2)}`;
   // 「峰值吞吐量」卡片已删除：它显示的 65.1 t/s 就是「单请求峰值榜」表的第一行
   // （同一个数字），而榜单还多给了确切时间点。此处不再计算，避免写已不存在的元素。
   // 缓存命中率：Σ命中 / Σ提示。两个引擎的计数器语义不同（llama 的 prompt 只算实读、

@@ -357,6 +357,7 @@ src_days = {}          # 'YYYY-MM-DD' -> {source: [请求数, 输出 token]}
 _fail = {}             # 来源 -> 失败/放弃次数（长期健康度的核心指标）
 _finish_days = {}      # 'YYYY-MM-DD' -> {finish: 次数} —— 健康度趋势面板的数据源
 _cost_days = {}        # 'YYYY-MM-DD' -> 等效成本(¥, DeepSeek V4-Flash 忙闲分时)
+_wh_days = {}          # 'YYYY-MM-DD' -> 边际电量(Wh, 实测 10W 边际功耗推算)
 if os.path.exists(SRC):
     with open(SRC, errors='replace') as f:
         for line in f:
@@ -417,6 +418,11 @@ if os.path.exists(SRC):
                 _miss = max(int(r.get('prompt_tokens') or 0) - _hit, 0)
                 _cost_days[_day] = _cost_days.get(_day, 0) + \
                     (_hit * _rh + _miss * _rm + int(r.get('generated') or 0) * _ro) / 1e6
+                # 电费：GPU 忙碌毫秒 × 实测边际功耗。实测(2026-10-16 04:04, m1 推理中,
+                # powermetrics): GPU 7.4-8.0W @618-796MHz(带宽瓶颈,不上满频), package 7.6-8.1W;
+                # 待机 package ~2W → 边际取 10W(含内存带宽增量约 4W)。电价江苏居民一档 0.5283/kWh。
+                _busy = (float(r.get('prompt_ms') or 0) + float(r.get('decode_ms') or 0))
+                _wh_days[_day] = _wh_days.get(_day, 0) + _busy / 3600000 * 10
             # 按天×收尾状态：{"2026-10-15": {"stop": 41, "cancel": 2, "length": 1, "error": 3}}
             # 健康度趋势唯一的数据源 —— 只记"跑完的回合"的时代，失败/取消根本看不见。
             if _day:
@@ -500,16 +506,14 @@ for _day, _rec in rollup.items():
         continue
     _d = days.setdefault(_day, {'date': _day, 's0': 0, 's1': 0, 'count': 0, 'prompt': 0, 'gen': 0})
     _d['src'] = _per
+    # 注意：这里只挂来源构成(src)，不能再加 token —— 同一批 Strata 请求已经由
+    # LEDGER(strata_requests.jsonl) → agg_days 路径（第 184 行）进过 prompt/gen 了,
+    # 再加一遍就是双倍（实测 10-16 输入 17M 被算成 33M）。rollup 里的 src 只用来画占比。
 for _day, _c in _cost_days.items():
-    # 等效成本按天挂在 days[] 上,前端按选中范围求和。账本从 10-15 才有,之前的天没有此字段。
+    # 等效成本按天挂在 days[] 上,前端按选中范围求和。账本自 10-15 才有,之前的天没有此字段。
     days.setdefault(_day, {'date': _day, 's0': 0, 's1': 0, 'count': 0, 'prompt': 0, 'gen': 0})['cost'] = round(_c, 4)
-    # 来源账本（Strata 时代）的 token 必须并进当天总量 —— 否则日汇总/热力图/态势行
-    # 只算 llama 日志那部分，Strata 的消耗被整段漏掉。
-    # 实测：10-15 的 prompt 与 cache_total 完全相同（14,373,289），而账本里还有 425,473
-    # 输入没被算进去。今天只差 3%，等 Strata 累积起来会变成全量少算。
-    _d['prompt'] = (_d.get('prompt') or 0) + sum((v[2] or 0) for v in _per.values())
-    _d['gen'] = (_d.get('gen') or 0) + sum((v[1] or 0) for v in _per.values())
-    _d['count'] = (_d.get('count') or 0) + sum(((v[1] or 0) + (v[2] or 0)) for v in _per.values())
+for _day, _w in _wh_days.items():
+    days.setdefault(_day, {'date': _day, 's0': 0, 's1': 0, 'count': 0, 'prompt': 0, 'gen': 0})['wh'] = round(_w, 2)
 
 # --- 峰值与长尾：直接从账本重建两张榜 ---
 # 旧表只有 时间/rate/上下文/输出 —— 看不出"谁跑的""排了多久""占用了多久"。
