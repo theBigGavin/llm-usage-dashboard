@@ -238,6 +238,11 @@ for day, (hit, base) in cache_strata.items():
     d = days.setdefault(day, {'date': day, 's0': 0, 's1': 0, 'count': 0, 'prompt': 0, 'gen': 0})
     d['cached'] = d.get('cached', 0) + hit
     d['cache_total'] = d.get('cache_total', 0) + base
+    # 实读输入 = 整段 prompt − 缓存复用(reused)。Strata 的 prompt_tokens 是整段、llama 的
+    # 只算实读 —— 效率图要跨引擎可比,必须统一成实读口径,否则 10-15 切换点有个
+    # 纯属记账的 5-6 倍落差(Gavin 就问过"换 Strata 效率怎么崩了")。llama 天无此字段,
+    # 前端 fallback 到 prompt（本来就是实读）。
+    d['prompt_eff'] = max((d.get('prompt') or 0) - hit, 0)
 
 # 峰值吞吐（单请求）
 for day, (v, at) in peak.items():
