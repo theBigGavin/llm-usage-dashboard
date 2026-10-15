@@ -356,6 +356,7 @@ _src = {}
 src_days = {}          # 'YYYY-MM-DD' -> {source: [请求数, 输出 token]}
 _fail = {}             # 来源 -> 失败/放弃次数（长期健康度的核心指标）
 _finish_days = {}      # 'YYYY-MM-DD' -> {finish: 次数} —— 健康度趋势面板的数据源
+_cost_days = {}        # 'YYYY-MM-DD' -> 等效成本(¥, DeepSeek V4-Flash 忙闲分时)
 if os.path.exists(SRC):
     with open(SRC, errors='replace') as f:
         for line in f:
@@ -364,6 +365,10 @@ if os.path.exists(SRC):
             except Exception:
                 continue
             k = r.get('source') or 'internal'
+            if r.get('ua') == 'strata-watchdog-noauth':
+                # 看门狗的故意无 key 探测（安全断言:裸请求必须吃 401）——不是流量,不入账,
+                # 否则健康度面板的 error 趋势每天有 ~240 条水分。
+                continue
             if float(r.get('hold_ms') or 0) <= 0:
                 # 没有 wait/hold 的行分两类，不能一刀切丢掉：
                 #  · 失败/放弃（_json / handle_one_request 写的）→ 单独计数
@@ -401,6 +406,17 @@ if os.path.exists(SRC):
                 _e[0] += 1
                 _e[1] += int(r.get('generated') or 0)
                 _e[2] += int(r.get('prompt_tokens') or 0)
+                # 等效成本：DeepSeek 官网人民币价,V4-Flash 档(我们模型的体量对标的档位),
+                # 忙闲分时——高峰=工作日 9:00-12:00 & 14:00-18:00,闲时半价。
+                # 命中=reused(本地前缀缓存复用,语义对应 DS 的 cache hit),未命中=prompt-reused。
+                # 之前的 ¥4.2/M 混合口径实测高估 10 倍(把低价输入全按输出价算了)。
+                _dt = datetime.strptime(r.get('ts', '')[:19], '%Y-%m-%dT%H:%M:%S')
+                _peak = _dt.weekday() < 5 and (9 <= _dt.hour < 12 or 14 <= _dt.hour < 18)
+                _rh, _rm, _ro = (0.10, 3.0, 9.0) if _peak else (0.05, 1.5, 4.5)
+                _hit = int(r.get('reused') or 0)
+                _miss = max(int(r.get('prompt_tokens') or 0) - _hit, 0)
+                _cost_days[_day] = _cost_days.get(_day, 0) + \
+                    (_hit * _rh + _miss * _rm + int(r.get('generated') or 0) * _ro) / 1e6
             # 按天×收尾状态：{"2026-10-15": {"stop": 41, "cancel": 2, "length": 1, "error": 3}}
             # 健康度趋势唯一的数据源 —— 只记"跑完的回合"的时代，失败/取消根本看不见。
             if _day:
@@ -484,6 +500,9 @@ for _day, _rec in rollup.items():
         continue
     _d = days.setdefault(_day, {'date': _day, 's0': 0, 's1': 0, 'count': 0, 'prompt': 0, 'gen': 0})
     _d['src'] = _per
+for _day, _c in _cost_days.items():
+    # 等效成本按天挂在 days[] 上,前端按选中范围求和。账本从 10-15 才有,之前的天没有此字段。
+    days.setdefault(_day, {'date': _day, 's0': 0, 's1': 0, 'count': 0, 'prompt': 0, 'gen': 0})['cost'] = round(_c, 4)
     # 来源账本（Strata 时代）的 token 必须并进当天总量 —— 否则日汇总/热力图/态势行
     # 只算 llama 日志那部分，Strata 的消耗被整段漏掉。
     # 实测：10-15 的 prompt 与 cache_total 完全相同（14,373,289），而账本里还有 425,473
